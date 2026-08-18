@@ -1,0 +1,2256 @@
+// SPDX-License-Identifier: MPL-2.0
+#include "vr.h"
+
+#include <cmath>
+#include <array>
+#include <cstdint>
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <string>
+#include <unordered_set>
+#include <patch_common/CallHook.h>
+#include <patch_common/FunHook.h>
+#include <xlog/xlog.h>
+#include "../rf/gr/gr.h"
+#include "../rf/bmpman.h"
+#include "../main/main.h"
+#include "../rf/multi.h"
+#include "../rf/os/os.h"
+#include "../rf/entity.h"
+#include "../rf/player/player.h"
+#include "../rf/os/frametime.h"
+#include "../rf/gameseq.h"
+#include "../rf/input.h"
+#include "../rf/collide.h"
+#include "../rf/vmesh.h"
+#include "../rf/weapon.h"
+#include "../rf/hud.h"
+#include "../hud/hud_internal.h"
+#include "../input/control_input_filter.h"
+#include "../misc/alpine_settings.h"
+#include "../os/console.h"
+#include "vr_render_bridge.h"
+
+#ifdef AF_ENABLE_OPENXR
+#include "openxr_context.h"
+#endif
+
+namespace afvr
+{
+    namespace
+    {
+        bool g_requested = false;
+#ifdef AF_ENABLE_OPENXR
+        // Explicit lifetime avoids invoking OpenXR from a C++ static destructor
+        // while the injected DLL is being detached under the loader lock.
+        OpenXrContext* g_openxr = nullptr;
+#endif
+
+        struct SceneRenderStats
+        {
+            uint32_t portal_traversals = 0;
+            uint32_t static_solids = 0;
+            uint32_t movable_solids = 0;
+            uint32_t standard_meshes = 0;
+            uint32_t character_meshes = 0;
+        };
+
+        std::array<SceneRenderStats, 3> g_scene_render_stats{};
+        int g_scene_render_pass = -1;
+        bool g_scene_render_stats_collecting = false;
+        bool g_scene_render_stats_logged = false;
+        uint32_t g_scene_render_diagnostic_frames = 0;
+        float g_hmd_relative_yaw = 0.0f;
+        bool g_movement_input_logged = false;
+        bool g_snap_turn_logged = false;
+        bool g_smooth_turn_logged = false;
+        bool g_snap_turn_latched = false;
+        bool g_rendering_weapon = false;
+        bool g_rendering_fpgun_body = false;
+        bool g_weapon_pose_valid = false;
+        bool g_weapon_aim_pose_valid = false;
+        bool g_two_hand_support_available = false;
+        bool g_two_hand_weapon_active = false;
+        int g_two_hand_weapon_id = -1;
+        int g_current_weapon_id = -1;
+        bool g_debug_weapon_at_hmd = false;
+        int g_weapon_render_eye = -1;
+        rf::Vector3 g_weapon_render_position{};
+        rf::Matrix3 g_weapon_render_orientation{};
+        rf::Vector3 g_weapon_aim_position{};
+        rf::Matrix3 g_weapon_aim_orientation{};
+        bool g_right_controller_pose_valid = false;
+        rf::Vector3 g_right_controller_position{};
+        rf::Matrix3 g_right_controller_orientation{};
+        bool g_head_pose_valid = false;
+        rf::Vector3 g_head_position{};
+        rf::Matrix3 g_head_orientation{};
+        bool g_weapon_render_requested_logged = false;
+        bool g_player_render_reached_logged = false;
+        bool g_weapon_mesh_render_reached_logged = false;
+        bool g_final_weapon_transform_logged = false;
+        std::array<bool, 2> g_weapon_eye_draw_logged{};
+        std::array<bool, 64> g_two_hand_weapon_logged{};
+        bool g_trigger_pressed = false;
+        bool g_trigger_just_pressed = false;
+        bool g_previous_trigger_pressed = false;
+        bool g_trigger_action_logged = false;
+        bool g_frame_limiter_bypassed = false;
+        bool g_menu_capture_active = false;
+        bool g_hud_capture_active = false;
+        int g_hud_rendered_frame = -1;
+        bool g_menu_pointer_valid = false;
+        int g_menu_pointer_x = 0;
+        int g_menu_pointer_y = 0;
+        bool g_previous_reload = false;
+        bool g_previous_jump = false;
+        bool g_previous_crouch = false;
+        bool g_previous_menu_button = false;
+        bool g_previous_left_grip = false;
+        bool g_previous_primary_fire = false;
+        bool g_previous_secondary_fire = false;
+        bool g_fire_mode_secondary = false;
+        bool g_fire_blocked_until_trigger_release = false;
+        bool g_gameplay_input_blocked_until_release = false;
+        bool g_reload_pressed = false;
+        bool g_reload_just_pressed = false;
+        bool g_jump_pressed = false;
+        bool g_jump_just_pressed = false;
+        bool g_crouch_pressed = false;
+        bool g_crouch_just_pressed = false;
+        bool g_menu_button_pressed = false;
+        bool g_menu_button_just_pressed = false;
+        bool g_left_grip_pressed = false;
+        bool g_left_grip_just_pressed = false;
+        bool g_primary_fire_pressed = false;
+        bool g_primary_fire_just_pressed = false;
+        bool g_secondary_fire_pressed = false;
+        bool g_secondary_fire_just_pressed = false;
+        bool g_weapon_cycle_latched = false;
+        bool g_previous_weapon_pulse = false;
+        bool g_next_weapon_pulse = false;
+        bool g_jump_semantic_logged = false;
+        bool g_crouch_semantic_logged = false;
+        bool g_menu_semantic_logged = false;
+        bool g_input_debug = false;
+        rf::GameState g_last_menu_state = rf::GS_INIT;
+        bool g_previous_forward = false;
+        bool g_previous_backward = false;
+        bool g_previous_strafe_left = false;
+        bool g_previous_strafe_right = false;
+        float g_weapon_aim_yaw_correction_degrees = -1.5f;
+
+        struct TimingDiagnostics
+        {
+            using Clock = std::chrono::steady_clock;
+
+            Clock::time_point window_start{};
+            Clock::time_point game_frame_start{};
+            uint64_t game_frames = 0;
+            uint64_t xr_waits = 0;
+            uint64_t xr_submissions = 0;
+            uint64_t desktop_presents = 0;
+            double game_cpu_ms = 0.0;
+            double rf_frametime_ms = 0.0;
+            double xr_wait_ms = 0.0;
+            double xr_wait_return_interval_ms = 0.0;
+            uint64_t xr_wait_return_intervals = 0;
+            double desktop_present_ms = 0.0;
+            double runtime_target_hz = 0.0;
+
+            void reset(Clock::time_point now)
+            {
+                window_start = now;
+                game_frame_start = {};
+                game_frames = 0;
+                xr_waits = 0;
+                xr_submissions = 0;
+                desktop_presents = 0;
+                game_cpu_ms = 0.0;
+                rf_frametime_ms = 0.0;
+                xr_wait_ms = 0.0;
+                xr_wait_return_interval_ms = 0.0;
+                xr_wait_return_intervals = 0;
+                desktop_present_ms = 0.0;
+            }
+        };
+
+        TimingDiagnostics g_timing;
+
+        void maybe_log_timing(TimingDiagnostics::Clock::time_point now)
+        {
+#ifdef AF_ENABLE_OPENXR
+            if (!g_openxr || !g_openxr->is_session_running()) {
+                g_timing.reset(now);
+                return;
+            }
+#else
+            g_timing.reset(now);
+            return;
+#endif
+            if (g_timing.window_start == TimingDiagnostics::Clock::time_point{}) {
+                g_timing.reset(now);
+                return;
+            }
+
+            const double elapsed_seconds = std::chrono::duration<double>(
+                now - g_timing.window_start).count();
+            constexpr double report_interval_seconds = 5.0;
+            if (elapsed_seconds < report_interval_seconds) {
+                return;
+            }
+
+            const double game_fps = g_timing.game_frames / elapsed_seconds;
+            const double submission_fps = g_timing.xr_submissions / elapsed_seconds;
+            const double game_interval_ms = g_timing.game_frames > 0
+                ? elapsed_seconds * 1000.0 / g_timing.game_frames : 0.0;
+            const double game_cpu_ms = g_timing.game_frames > 0
+                ? g_timing.game_cpu_ms / g_timing.game_frames : 0.0;
+            const double rf_frametime_ms = g_timing.game_frames > 0
+                ? g_timing.rf_frametime_ms / g_timing.game_frames : 0.0;
+            const double xr_wait_ms = g_timing.xr_waits > 0
+                ? g_timing.xr_wait_ms / g_timing.xr_waits : 0.0;
+            const double xr_return_interval_ms = g_timing.xr_wait_return_intervals > 0
+                ? g_timing.xr_wait_return_interval_ms /
+                    g_timing.xr_wait_return_intervals : 0.0;
+            const double present_ms = g_timing.desktop_presents > 0
+                ? g_timing.desktop_present_ms / g_timing.desktop_presents : 0.0;
+
+            xlog::info(
+                "[AFVR] Timing: runtime target {:.2f} Hz; XR submissions {:.2f} fps; RF game frames {:.2f} fps",
+                g_timing.runtime_target_hz, submission_fps, game_fps);
+            xlog::info(
+                "[AFVR] Timing: xrWaitFrame avg {:.3f} ms; wait-return interval {:.3f} ms; game interval {:.3f} ms",
+                xr_wait_ms, xr_return_interval_ms, game_interval_ms);
+            xlog::info(
+                "[AFVR] Timing: CPU frame {:.3f} ms; RF frametime {:.3f} ms; frametime_min {:.3f} ms; configured maxfps {}; desktop Present {:.3f} ms",
+                game_cpu_ms, rf_frametime_ms,
+                static_cast<double>(rf::frametime_min) * 1000.0,
+                g_alpine_game_config.max_fps, present_ms);
+            g_timing.reset(now);
+        }
+
+        using PortalRenderArgument = void*;
+
+        void reset_object_render_flags()
+        {
+            // RF normally calls this once immediately before its single portal
+            // traversal. A stereo frame has independent traversals, so each
+            // pass needs fresh render-only visited/drawn flags as well.
+            addr_as_ref<void()>(0x00488200)();
+        }
+
+#ifdef AF_ENABLE_OPENXR
+        struct TrackingOrigin
+        {
+            bool valid = false;
+            XrVector3f position{};
+            float yaw = 0.0f;
+        };
+
+        TrackingOrigin g_tracking_origin;
+        bool g_recenter_requested = true;
+        bool g_head_rotation_logged = false;
+
+        struct VrWeaponCalibration
+        {
+            int weapon_id;
+            rf::Vector3 grip_position;
+            rf::Vector3 grip_rotation;
+            rf::Vector3 pivot_position;
+            rf::Vector3 pivot_rotation;
+            rf::Vector3 muzzle_position;
+            rf::Vector3 muzzle_direction;
+        };
+
+        // RF weapon IDs are stable table indices for the stock campaign. These
+        // entries are deliberately provisional: every weapon uses one transform
+        // path and unknown/mod weapons receive the visible fallback below.
+        // Move values are live Quest 3 calibrations. Undercover/special variants
+        // inherit their matching campaign weapon because they are not separately
+        // available in the normal singleplayer weapon cycle.
+        const std::array g_weapon_calibrations{
+            VrWeaponCalibration{0x00, {0.260f, 0.200f, -0.300f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // remote charge
+            VrWeaponCalibration{0x02, {-0.190f, -0.100f, -0.500f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // riot stick
+            VrWeaponCalibration{0x03, {-0.190f, 0.000f, -0.750f}, {}, {0.055f, -0.045f, 0.105f}, {}, {0.055f, -0.015f, 0.310f}, {0.0f, 0.0f, 1.0f}}, // handgun
+            VrWeaponCalibration{0x04, {-0.190f, 0.000f, -0.750f}, {}, {0.055f, -0.045f, 0.125f}, {}, {0.055f, -0.015f, 0.390f}, {0.0f, 0.0f, 1.0f}}, // undercover handgun
+            VrWeaponCalibration{0x05, {-0.190f, 0.300f, 0.600f}, {}, {0.105f, -0.085f, 0.275f}, {}, {0.105f, -0.030f, 0.980f}, {0.0f, 0.0f, 1.0f}}, // shotgun
+            VrWeaponCalibration{0x06, {-0.190f, 0.200f, -0.600f}, {}, {0.110f, -0.090f, 0.300f}, {}, {0.110f, -0.025f, 0.900f}, {0.0f, 0.0f, 1.0f}}, // sniper rifle
+            VrWeaponCalibration{0x07, {-0.090f, 0.150f, -0.250f}, {}, {0.140f, -0.105f, 0.325f}, {}, {0.230f, 0.010f, 0.950f}, {0.0f, 0.0f, 1.0f}}, // rocket launcher
+            VrWeaponCalibration{0x08, {-0.140f, 0.250f, -0.650f}, {}, {0.105f, -0.085f, 0.265f}, {}, {0.105f, -0.025f, 0.790f}, {0.0f, 0.0f, 1.0f}}, // assault rifle
+            VrWeaponCalibration{0x09, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}}, // machine pistol
+            VrWeaponCalibration{0x0A, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}}, // special machine pistol
+            VrWeaponCalibration{0x0B, {-0.390f, 0.000f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // grenade
+            VrWeaponCalibration{0x0C, {-0.090f, -1.210f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // flamethrower
+            VrWeaponCalibration{0x0D, {-0.140f, -0.050f, -0.350f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // riot shield
+            VrWeaponCalibration{0x0E, {1.160f, 0.200f, 0.100f}, {}, {0.120f, -0.095f, 0.310f}, {}, {0.120f, -0.020f, 0.920f}, {0.0f, 0.0f, 1.0f}}, // rail gun
+            VrWeaponCalibration{0x0F, {-0.040f, 0.200f, -0.050f}, {}, {0.120f, -0.095f, 0.300f}, {}, {0.120f, -0.025f, 0.860f}, {0.0f, 0.0f, 1.0f}}, // heavy machine gun
+            VrWeaponCalibration{0x10, {-0.190f, 0.200f, -0.350f}, {}, {0.110f, -0.090f, 0.285f}, {}, {0.110f, -0.025f, 0.850f}, {0.0f, 0.0f, 1.0f}}, // scoped assault rifle
+            VrWeaponCalibration{0x11, {0.210f, 0.100f, -0.750f}, {}, {0.145f, -0.110f, 0.335f}, {}, {0.145f, 0.010f, 1.000f}, {0.0f, 0.0f, 1.0f}}, // shoulder cannon
+        };
+        const VrWeaponCalibration g_fallback_weapon_calibration{
+            -1, {-0.190f, 0.000f, -0.750f}, {}, {0.080f, -0.065f, 0.200f}, {},
+            {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f},
+        };
+        std::array<bool, 64> g_weapon_calibration_logged{};
+        std::array<VrWeaponCalibration, 64> g_live_weapon_calibrations{};
+        std::array<bool, 64> g_live_weapon_calibration_active{};
+
+        struct VrTwoHandCalibration
+        {
+            int weapon_id;
+            float support_fraction;
+            float capture_radius;
+            float maximum_hand_line_weight;
+        };
+
+        // Support positions are derived along each calibrated weapon's
+        // primary-grip-to-muzzle line. The per-gun fractions put the virtual
+        // foregrip on the receiver/pump/handguard without requiring new model
+        // tags. Pistols deliberately favor the two aim poses over the short,
+        // physically side-by-side controller baseline.
+        const std::array g_two_hand_calibrations{
+            VrTwoHandCalibration{0x03, 0.12f, 0.20f, 0.30f}, // handgun
+            VrTwoHandCalibration{0x04, 0.12f, 0.20f, 0.30f}, // undercover handgun
+            VrTwoHandCalibration{0x05, 0.55f, 0.28f, 1.00f}, // shotgun
+            VrTwoHandCalibration{0x06, 0.52f, 0.28f, 1.00f}, // sniper rifle
+            VrTwoHandCalibration{0x07, 0.45f, 0.30f, 0.95f}, // rocket launcher
+            VrTwoHandCalibration{0x08, 0.52f, 0.27f, 1.00f}, // assault rifle
+            VrTwoHandCalibration{0x09, 0.38f, 0.24f, 0.75f}, // machine pistol
+            VrTwoHandCalibration{0x0A, 0.38f, 0.24f, 0.75f}, // special machine pistol
+            VrTwoHandCalibration{0x0C, 0.48f, 0.30f, 0.90f}, // flamethrower
+            VrTwoHandCalibration{0x0E, 0.52f, 0.29f, 1.00f}, // rail gun
+            VrTwoHandCalibration{0x0F, 0.50f, 0.30f, 1.00f}, // heavy machine gun
+            VrTwoHandCalibration{0x10, 0.52f, 0.28f, 1.00f}, // scoped assault rifle
+            VrTwoHandCalibration{0x11, 0.45f, 0.31f, 0.95f}, // shoulder cannon
+        };
+        const VrTwoHandCalibration g_fallback_two_hand_calibration{
+            -1, 0.50f, 0.28f, 1.00f,
+        };
+
+        const VrWeaponCalibration& base_weapon_calibration(int weapon_id)
+        {
+            auto found = std::ranges::find_if(g_weapon_calibrations,
+                [weapon_id](const VrWeaponCalibration& calibration) {
+                    return calibration.weapon_id == weapon_id;
+                });
+            return found != g_weapon_calibrations.end()
+                ? *found : g_fallback_weapon_calibration;
+        }
+
+        const VrWeaponCalibration& weapon_calibration(int weapon_id)
+        {
+            if (weapon_id >= 0 &&
+                weapon_id < static_cast<int>(g_live_weapon_calibrations.size()) &&
+                g_live_weapon_calibration_active[weapon_id]) {
+                return g_live_weapon_calibrations[weapon_id];
+            }
+            return base_weapon_calibration(weapon_id);
+        }
+
+        int current_local_weapon_id()
+        {
+            if (!rf::local_player) {
+                return -1;
+            }
+            auto* entity = rf::entity_from_handle(rf::local_player->entity_handle);
+            return entity ? entity->ai.current_primary_weapon : -1;
+        }
+
+        const VrTwoHandCalibration* two_hand_calibration(int weapon_id)
+        {
+            auto found = std::ranges::find_if(g_two_hand_calibrations,
+                [weapon_id](const VrTwoHandCalibration& calibration) {
+                    return calibration.weapon_id == weapon_id;
+                });
+            if (found != g_two_hand_calibrations.end()) {
+                return &*found;
+            }
+
+            // Known non-guns and throwables never acquire the support hand.
+            if (weapon_id == 0x00 || weapon_id == 0x01 ||
+                weapon_id == 0x02 || weapon_id == 0x0B || weapon_id == 0x0D) {
+                return nullptr;
+            }
+            if (weapon_id < 0 || weapon_id >= rf::num_weapon_types) {
+                return nullptr;
+            }
+
+            // Mod weapons opt in by behaving like a gun. Gravity/remote-charge,
+            // detonator, and melee flags identify authored non-gun handling.
+            const int excluded_flags = rf::WTF_GRAVITY | rf::WTF_REMOTE_CHARGE |
+                rf::WTF_DETONATOR | rf::WTF_MELEE;
+            return (rf::weapon_types[weapon_id].flags & excluded_flags) == 0
+                ? &g_fallback_two_hand_calibration : nullptr;
+        }
+
+        VrWeaponCalibration* editable_weapon_calibration()
+        {
+            const int weapon_id = current_local_weapon_id();
+            if (weapon_id < 0 ||
+                weapon_id >= static_cast<int>(g_live_weapon_calibrations.size())) {
+                rf::console::print("No calibratable local weapon is equipped");
+                return nullptr;
+            }
+            if (!g_live_weapon_calibration_active[weapon_id]) {
+                g_live_weapon_calibrations[weapon_id] =
+                    base_weapon_calibration(weapon_id);
+                g_live_weapon_calibrations[weapon_id].weapon_id = weapon_id;
+                g_live_weapon_calibration_active[weapon_id] = true;
+            }
+            return &g_live_weapon_calibrations[weapon_id];
+        }
+
+        rf::Vector3 transform_direction(const rf::Matrix3& basis, const rf::Vector3& value)
+        {
+            return basis.rvec * value.x + basis.uvec * value.y + basis.fvec * value.z;
+        }
+
+        rf::Matrix3 compose_orientation(const rf::Matrix3& base, const rf::Matrix3& relative)
+        {
+            return {
+                transform_direction(base, relative.rvec),
+                transform_direction(base, relative.uvec),
+                transform_direction(base, relative.fvec),
+            };
+        }
+
+        rf::Matrix3 euler_rotation_matrix(const rf::Vector3& rotation)
+        {
+            const float pitch_sin = std::sin(rotation.x);
+            const float pitch_cos = std::cos(rotation.x);
+            const float yaw_sin = std::sin(rotation.y);
+            const float yaw_cos = std::cos(rotation.y);
+            const float roll_sin = std::sin(rotation.z);
+            const float roll_cos = std::cos(rotation.z);
+            const rf::Matrix3 pitch{
+                {1.0f, 0.0f, 0.0f},
+                {0.0f, pitch_cos, pitch_sin},
+                {0.0f, -pitch_sin, pitch_cos},
+            };
+            const rf::Matrix3 yaw{
+                {yaw_cos, 0.0f, -yaw_sin},
+                {0.0f, 1.0f, 0.0f},
+                {yaw_sin, 0.0f, yaw_cos},
+            };
+            const rf::Matrix3 roll{
+                {roll_cos, roll_sin, 0.0f},
+                {-roll_sin, roll_cos, 0.0f},
+                {0.0f, 0.0f, 1.0f},
+            };
+            return compose_orientation(
+                compose_orientation(yaw, pitch), roll);
+        }
+
+        rf::Matrix3 xr_orientation_to_rf(const XrQuaternionf& value)
+        {
+            const float xx = value.x * value.x;
+            const float yy = value.y * value.y;
+            const float zz = value.z * value.z;
+            const float xy = value.x * value.y;
+            const float xz = value.x * value.z;
+            const float yz = value.y * value.z;
+            const float xw = value.x * value.w;
+            const float yw = value.y * value.w;
+            const float zw = value.z * value.w;
+
+            // OpenXR uses -Z forward while RF uses +Z forward. Reflect both
+            // the world and local Z axes (S*R*S).
+            return {
+                {1.0f - 2.0f * (yy + zz), 2.0f * (xy + zw), -2.0f * (xz - yw)},
+                {2.0f * (xy - zw), 1.0f - 2.0f * (xx + zz), -2.0f * (yz + xw)},
+                {-2.0f * (xz + yw), -2.0f * (yz - xw), 1.0f - 2.0f * (xx + yy)},
+            };
+        }
+
+        rf::Matrix3 tracking_yaw_neutralizer()
+        {
+            return euler_rotation_matrix({0.0f, -g_tracking_origin.yaw, 0.0f});
+        }
+
+        void capture_tracking_origin(const XrPosef& hmd_pose)
+        {
+            const rf::Matrix3 hmd_orientation =
+                xr_orientation_to_rf(hmd_pose.orientation);
+            g_tracking_origin.valid = true;
+            g_tracking_origin.position = hmd_pose.position;
+            g_tracking_origin.yaw = std::atan2(
+                hmd_orientation.fvec.x, hmd_orientation.fvec.z);
+            g_recenter_requested = false;
+            xlog::info("[AFVR] Tracking yaw recentered");
+            xlog::info(
+                "[AFVR] Tracking origin position=({:.3f}, {:.3f}, {:.3f}), neutral yaw={:.2f} degrees",
+                hmd_pose.position.x, hmd_pose.position.y, hmd_pose.position.z,
+                g_tracking_origin.yaw * 57.2957795131f);
+        }
+
+        rf::Vector3 relative_tracking_position(const XrVector3f& position)
+        {
+            const rf::Vector3 converted_delta{
+                position.x - g_tracking_origin.position.x,
+                position.y - g_tracking_origin.position.y,
+                -(position.z - g_tracking_origin.position.z),
+            };
+            return transform_direction(tracking_yaw_neutralizer(), converted_delta);
+        }
+
+        rf::Matrix3 relative_tracking_orientation(const XrQuaternionf& orientation)
+        {
+            // Remove only the neutral yaw. Current pitch and roll remain live,
+            // including at the instant the origin is captured.
+            return compose_orientation(
+                tracking_yaw_neutralizer(), xr_orientation_to_rf(orientation));
+        }
+
+        bool transform_tracked_pose_to_world(const XrPosef& tracked_pose,
+            const rf::Vector3& base_position, const rf::Matrix3& base_orientation,
+            rf::Vector3& world_position, rf::Matrix3& world_orientation)
+        {
+            if (!g_tracking_origin.valid) {
+                return false;
+            }
+
+            const rf::Vector3 relative_rf_position =
+                relative_tracking_position(tracked_pose.position);
+            const rf::Matrix3 relative_rf_orientation =
+                relative_tracking_orientation(tracked_pose.orientation);
+
+            world_position = base_position +
+                transform_direction(base_orientation, relative_rf_position);
+            world_orientation = compose_orientation(
+                base_orientation, relative_rf_orientation);
+            return true;
+        }
+
+        rf::Vector3 normalized_or(rf::Vector3 value, const rf::Vector3& fallback)
+        {
+            const float length = value.len();
+            if (length <= 0.0001f) {
+                return fallback;
+            }
+            return value / length;
+        }
+
+        float smooth_step(float value)
+        {
+            value = std::clamp(value, 0.0f, 1.0f);
+            return value * value * (3.0f - 2.0f * value);
+        }
+
+        rf::Matrix3 solve_two_hand_aim_orientation(
+            const rf::Vector3& primary_position,
+            const rf::Matrix3& primary_aim,
+            const rf::Vector3& support_position,
+            const rf::Matrix3& support_aim,
+            float maximum_hand_line_weight)
+        {
+            // Averaging both aim poses provides a stable result for pistols and
+            // near-overlapping hands. As hand separation grows, long guns move
+            // toward the physical primary-to-support baseline.
+            const rf::Vector3 averaged_forward = normalized_or(
+                primary_aim.fvec + support_aim.fvec, primary_aim.fvec);
+            const rf::Vector3 hand_delta = support_position - primary_position;
+            const float hand_separation = hand_delta.len();
+            const rf::Vector3 hand_forward = normalized_or(
+                hand_delta, averaged_forward);
+            const float line_alignment = std::clamp(
+                averaged_forward.dot_prod(hand_forward), 0.0f, 1.0f);
+            const float separation_factor = smooth_step(
+                (hand_separation - 0.07f) / 0.23f);
+            const float alignment_factor = smooth_step(
+                (line_alignment - 0.15f) / 0.70f);
+            const float hand_line_weight = std::clamp(
+                maximum_hand_line_weight * separation_factor * alignment_factor,
+                0.0f, 1.0f);
+            const rf::Vector3 forward = normalized_or(
+                averaged_forward * (1.0f - hand_line_weight) +
+                    hand_forward * hand_line_weight,
+                primary_aim.fvec);
+
+            // Preserve natural controller roll while rebuilding a strictly
+            // orthonormal RF basis around the solved barrel direction.
+            rf::Vector3 reference_up = normalized_or(
+                primary_aim.uvec + support_aim.uvec, primary_aim.uvec);
+            reference_up -= forward * reference_up.dot_prod(forward);
+            if (reference_up.len() <= 0.0001f) {
+                reference_up = forward.cross(primary_aim.rvec);
+            }
+            reference_up = normalized_or(reference_up, primary_aim.uvec);
+            const rf::Vector3 right = normalized_or(
+                reference_up.cross(forward), primary_aim.rvec);
+            const rf::Vector3 up = normalized_or(
+                forward.cross(right), primary_aim.uvec);
+            return {right, up, forward};
+        }
+
+        void update_weapon_pose(const rf::Vector3& base_position,
+            const rf::Matrix3& base_orientation)
+        {
+            const auto& input = g_openxr->input_state();
+            constexpr size_t left_hand = 0;
+            constexpr size_t right_hand = 1;
+            rf::Vector3 controller_grip_position{};
+            rf::Matrix3 controller_grip_orientation{};
+            g_weapon_pose_valid = input.grip_pose_valid[right_hand] &&
+                transform_tracked_pose_to_world(input.grip_poses[right_hand],
+                    base_position, base_orientation,
+                    controller_grip_position, controller_grip_orientation);
+            rf::Vector3 controller_aim_position{};
+            rf::Matrix3 controller_aim_orientation{};
+            g_weapon_aim_pose_valid = input.aim_pose_valid[right_hand] &&
+                transform_tracked_pose_to_world(input.aim_poses[right_hand],
+                    base_position, base_orientation,
+                    controller_aim_position, controller_aim_orientation);
+            g_right_controller_pose_valid = false;
+            if (!g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
+                g_two_hand_support_available = false;
+                g_two_hand_weapon_active = false;
+                g_two_hand_weapon_id = -1;
+                return;
+            }
+
+            rf::Vector3 support_grip_position{};
+            rf::Matrix3 support_grip_orientation{};
+            const bool support_grip_pose_valid =
+                input.grip_pose_valid[left_hand] &&
+                transform_tracked_pose_to_world(input.grip_poses[left_hand],
+                    base_position, base_orientation,
+                    support_grip_position, support_grip_orientation);
+            rf::Vector3 support_aim_position{};
+            rf::Matrix3 support_aim_orientation = controller_aim_orientation;
+            const bool support_aim_pose_valid =
+                input.aim_pose_valid[left_hand] &&
+                transform_tracked_pose_to_world(input.aim_poses[left_hand],
+                    base_position, base_orientation,
+                    support_aim_position, support_aim_orientation);
+
+            // Effects such as ejected casings use the physical primary-grip
+            // position and the final solved weapon orientation.
+            g_right_controller_position = controller_grip_position;
+            g_right_controller_pose_valid = true;
+
+            g_current_weapon_id = current_local_weapon_id();
+            const auto& calibration = weapon_calibration(g_current_weapon_id);
+            const VrTwoHandCalibration* two_hand =
+                two_hand_calibration(g_current_weapon_id);
+
+            // Quest Touch's grip pose supplies the physical controller position,
+            // while its aim pose supplies the barrel-compatible orientation that
+            // was validated in the previous live build. The grip orientation points
+            // the RF meshes upward and must not be used as the weapon basis.
+            rf::Matrix3 solved_aim_orientation = controller_aim_orientation;
+            rf::Matrix3 grip_anchor_orientation = compose_orientation(
+                controller_aim_orientation,
+                euler_rotation_matrix(calibration.grip_rotation));
+            rf::Vector3 grip_anchor_position = controller_grip_position +
+                transform_direction(grip_anchor_orientation,
+                    calibration.grip_position);
+            g_weapon_render_orientation = compose_orientation(
+                grip_anchor_orientation,
+                euler_rotation_matrix(calibration.pivot_rotation));
+            g_weapon_render_position = grip_anchor_position - transform_direction(
+                g_weapon_render_orientation, calibration.pivot_position);
+
+            // Compute the acquisition target from the current one-hand pose.
+            // Once grabbed, retain the support grip until squeeze release even
+            // if recoil or a large hand motion moves outside the capture sphere.
+            g_two_hand_support_available = false;
+            if (!two_hand || !support_grip_pose_valid || g_menu_capture_active) {
+                g_two_hand_weapon_active = false;
+                g_two_hand_weapon_id = -1;
+            }
+            else {
+                const rf::Vector3 model_support_position =
+                    calibration.pivot_position +
+                    (calibration.muzzle_position - calibration.pivot_position) *
+                        two_hand->support_fraction;
+                const rf::Vector3 support_target = g_weapon_render_position +
+                    transform_direction(g_weapon_render_orientation,
+                        model_support_position);
+                g_two_hand_support_available =
+                    (support_grip_position - support_target).len() <=
+                    two_hand->capture_radius;
+
+                if (!g_left_grip_pressed) {
+                    g_two_hand_weapon_active = false;
+                    g_two_hand_weapon_id = -1;
+                }
+                else if (g_two_hand_weapon_id != g_current_weapon_id) {
+                    g_two_hand_weapon_active = g_two_hand_support_available;
+                    g_two_hand_weapon_id = g_two_hand_weapon_active
+                        ? g_current_weapon_id : -1;
+                }
+
+                if (g_two_hand_weapon_active) {
+                    solved_aim_orientation = solve_two_hand_aim_orientation(
+                        controller_grip_position, controller_aim_orientation,
+                        support_grip_position,
+                        support_aim_pose_valid
+                            ? support_aim_orientation : controller_aim_orientation,
+                        two_hand->maximum_hand_line_weight);
+                    grip_anchor_orientation = compose_orientation(
+                        solved_aim_orientation,
+                        euler_rotation_matrix(calibration.grip_rotation));
+                    grip_anchor_position = controller_grip_position +
+                        transform_direction(grip_anchor_orientation,
+                            calibration.grip_position);
+                    g_weapon_render_orientation = compose_orientation(
+                        grip_anchor_orientation,
+                        euler_rotation_matrix(calibration.pivot_rotation));
+                    g_weapon_render_position = grip_anchor_position -
+                        transform_direction(g_weapon_render_orientation,
+                            calibration.pivot_position);
+
+                    if (g_current_weapon_id >= 0 &&
+                        g_current_weapon_id < static_cast<int>(g_two_hand_weapon_logged.size()) &&
+                        !g_two_hand_weapon_logged[g_current_weapon_id]) {
+                        g_two_hand_weapon_logged[g_current_weapon_id] = true;
+                        xlog::info(
+                            "[AFVR] Weapon {} acquired two-hand support grip; visual, muzzle, and fire direction share the solved pose",
+                            g_current_weapon_id);
+                    }
+                }
+            }
+
+            g_right_controller_orientation = solved_aim_orientation;
+
+            // Muzzle position follows the visual weapon. Apply one small shared
+            // horizontal correction to the platform aim pose; live testing found
+            // the uncorrected Quest Touch ray consistently landed to the right.
+            g_weapon_aim_position = g_weapon_render_position + transform_direction(
+                g_weapon_render_orientation, calibration.muzzle_position);
+            constexpr float degrees_to_radians = 0.0174532925199f;
+            g_weapon_aim_orientation = compose_orientation(
+                solved_aim_orientation,
+                euler_rotation_matrix({
+                    0.0f,
+                    g_weapon_aim_yaw_correction_degrees * degrees_to_radians,
+                    0.0f,
+                }));
+
+            if (g_current_weapon_id >= 0 &&
+                g_current_weapon_id < static_cast<int>(g_weapon_calibration_logged.size()) &&
+                !g_weapon_calibration_logged[g_current_weapon_id]) {
+                g_weapon_calibration_logged[g_current_weapon_id] = true;
+                xlog::info(
+                    "[AFVR] Weapon {} uses {} VR calibration; one-hand aim plus contextual left support grip, muzzle=weapon local",
+                    g_current_weapon_id,
+                    calibration.weapon_id >= 0 ? "stock" : "fallback");
+            }
+        }
+
+        float conservative_cpu_horizontal_fov(const XrFovf& fov)
+        {
+            const float horizontal_half_angle = std::max(
+                std::abs(fov.angleLeft), std::abs(fov.angleRight));
+            const float vertical_half_angle = std::max(
+                std::abs(fov.angleDown), std::abs(fov.angleUp));
+            const float desktop_aspect = static_cast<float>(rf::gr::screen.clip_width) /
+                static_cast<float>(std::max(rf::gr::screen.clip_height, 1));
+            const float horizontal_half_angle_for_vertical =
+                std::atan(std::tan(vertical_half_angle) * desktop_aspect);
+            constexpr float radians_to_degrees = 57.2957795131f;
+            return std::min(170.0f, 2.0f * radians_to_degrees *
+                std::max(horizontal_half_angle, horizontal_half_angle_for_vertical));
+        }
+
+        float apply_stick_deadzone(float value)
+        {
+            constexpr float deadzone = 0.18f;
+            if (std::abs(value) <= deadzone) {
+                return 0.0f;
+            }
+            return std::copysign((std::abs(value) - deadzone) / (1.0f - deadzone), value);
+        }
+
+        bool is_supported_vr_menu_state()
+        {
+            switch (rf::gameseq_get_state()) {
+                case rf::GS_MAIN_MENU:
+                case rf::GS_EXTRAS_MENU:
+                case rf::GS_SAVE_GAME_MENU:
+                case rf::GS_LOAD_GAME_MENU:
+                case rf::GS_OPTIONS_MENU:
+                case rf::GS_HELP:
+                case rf::GS_GAME_OVER:
+                case rf::GS_MESSAGE_LOG:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        void log_input_edge(const char* action, bool just_pressed)
+        {
+            if (g_input_debug && just_pressed) {
+                xlog::info("[AFVR] Input: {}", action);
+            }
+        }
+
+        void update_game_frame_limiter(bool bypass)
+        {
+            if (bypass) {
+                // xrWaitFrame is the only pacing wait while the XR session is
+                // running. Keep the configured flat-mode maxfps untouched.
+                rf::frametime_min = 0.0f;
+                if (!g_frame_limiter_bypassed) {
+                    g_frame_limiter_bypassed = true;
+                    xlog::info("[AFVR] Game-side FPS limiter bypassed for VR");
+                }
+            }
+            else if (g_frame_limiter_bypassed) {
+                g_frame_limiter_bypassed = false;
+                rf::frametime_min = 1.0f /
+                    static_cast<float>(g_alpine_game_config.max_fps);
+            }
+        }
+#endif
+
+        FunHook<bool(rf::Player*)> g_player_fpgun_render_hook{
+            0x004AB1A0,
+            [](rf::Player* player) {
+#ifdef AF_ENABLE_OPENXR
+                if (g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+                    player == rf::local_player) {
+                    if (!g_rendering_weapon) {
+                        if (!g_player_render_reached_logged) {
+                            g_player_render_reached_logged = true;
+                            xlog::info("[AFVR] player_render reached");
+                        }
+                        // The desktop camera viewmodel is intentionally absent in
+                        // VR. Each eye receives the tracked world-scale submission.
+                        return false;
+                    }
+                }
+#endif
+                return g_player_fpgun_render_hook.call_target(player);
+            },
+        };
+
+        bool render_tracked_fpgun(rf::Player* player)
+        {
+            // The explicit stereo path calls the original through its trampoline,
+            // so all state that RF consumes before the body VMesh call must be
+            // overridden here rather than in the hook wrapper above.
+            const rf::Vector3 saved_position = player->fpgun_data.fpgun_pos;
+            const rf::Matrix3 saved_orientation = player->fpgun_data.fpgun_orient;
+            const bool saved_show_silencer = player->fpgun_data.show_silencer;
+            player->fpgun_data.fpgun_pos = g_weapon_render_position;
+            player->fpgun_data.fpgun_orient = g_weapon_render_orientation;
+
+            // Desktop first-person silencers are intentionally omitted from the
+            // VR floating-weapon presentation. Restore the gameplay state after
+            // rendering so weapon logic is not changed.
+            player->fpgun_data.show_silencer = false;
+
+            static bool glock_composition_logged = false;
+            if (g_current_weapon_id == 0x03 && !glock_composition_logged) {
+                glock_composition_logged = true;
+                auto* entity = rf::entity_from_handle(player->entity_handle);
+                xlog::info(
+                    "[AFVR] Glock FPGUN composition: animated body VMesh '{}'; hand/arm material chunks filtered; separate silencer attachment suppressed in VR (RF requested={}, entity bitfield 0x{:X})",
+                    player->weapon_mesh_handle
+                        ? rf::vmesh_get_name(player->weapon_mesh_handle) : "<null>",
+                    saved_show_silencer,
+                    entity ? entity->weapon_silencer_bitfield : 0);
+            }
+
+            const bool rendered = g_player_fpgun_render_hook.call_target(player);
+            player->fpgun_data.fpgun_pos = saved_position;
+            player->fpgun_data.fpgun_orient = saved_orientation;
+            player->fpgun_data.show_silencer = saved_show_silencer;
+            return rendered;
+        }
+
+        CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, void*)>
+            g_player_fpgun_vmesh_render_hook{
+                0x004ABBC8,
+                [](rf::VMesh* mesh, rf::Vector3* position,
+                    rf::Matrix3* orientation, void* params) {
+#ifdef AF_ENABLE_OPENXR
+                    if (g_rendering_weapon && g_weapon_pose_valid) {
+                        if (!g_weapon_mesh_render_reached_logged) {
+                            g_weapon_mesh_render_reached_logged = true;
+                            xlog::info("[AFVR] weapon mesh render reached");
+                        }
+                        g_rendering_fpgun_body = true;
+                        g_player_fpgun_vmesh_render_hook.call_target(
+                            mesh, &g_weapon_render_position,
+                            &g_weapon_render_orientation, params);
+                        g_rendering_fpgun_body = false;
+                        if (!g_final_weapon_transform_logged) {
+                            g_final_weapon_transform_logged = true;
+                            xlog::info(
+                                "[AFVR] final weapon transform applied position=({:.3f}, {:.3f}, {:.3f})",
+                                g_weapon_render_position.x,
+                                g_weapon_render_position.y,
+                                g_weapon_render_position.z);
+                        }
+                        if (g_weapon_render_eye >= 0 && g_weapon_render_eye < 2 &&
+                            !g_weapon_eye_draw_logged[g_weapon_render_eye]) {
+                            g_weapon_eye_draw_logged[g_weapon_render_eye] = true;
+                            xlog::info("[AFVR] weapon draw submitted eye={}",
+                                g_weapon_render_eye);
+                        }
+                        return;
+                    }
+#endif
+                    g_player_fpgun_vmesh_render_hook.call_target(
+                        mesh, position, orientation, params);
+                },
+            };
+
+        CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, void*)>
+            g_player_fpgun_silencer_render_hook{
+                0x004ABD89,
+                [](rf::VMesh* mesh, rf::Vector3* position,
+                    rf::Matrix3* orientation, void* params) {
+#ifdef AF_ENABLE_OPENXR
+                    // RF renders the Glock silencer as a second VMesh after the
+                    // animated weapon body. Masking show_silencer normally skips
+                    // this call; blocking the attachment call as well makes the
+                    // VR policy unconditional if RF changes that state mid-frame.
+                    if (g_rendering_weapon && g_current_weapon_id == 0x03) {
+                        static bool silencer_draw_blocked_logged = false;
+                        if (!silencer_draw_blocked_logged) {
+                            silencer_draw_blocked_logged = true;
+                            xlog::info("[AFVR] Glock silencer attachment draw blocked in VR");
+                        }
+                        return;
+                    }
+#endif
+                    g_player_fpgun_silencer_render_hook.call_target(
+                        mesh, position, orientation, params);
+                },
+            };
+
+        ControlInputInjection vr_control_input_injection(
+            [[maybe_unused]] rf::ControlConfig* controls,
+            [[maybe_unused]] rf::ControlConfigAction action)
+        {
+            ControlInputInjection injected{};
+#ifdef AF_ENABLE_OPENXR
+            if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+                !rf::local_player || controls != &rf::local_player->settings.controls ||
+                g_menu_capture_active || g_gameplay_input_blocked_until_release) {
+                return injected;
+            }
+
+            const char* diagnostic_name = nullptr;
+            switch (action) {
+                case rf::CC_ACTION_PRIMARY_ATTACK:
+                    injected.down = g_primary_fire_pressed;
+                    injected.just_pressed = g_primary_fire_just_pressed;
+                    diagnostic_name = "Primary Fire";
+                    if (injected.down && !g_trigger_action_logged) {
+                        g_trigger_action_logged = true;
+                        xlog::info("[AFVR] Right trigger entered RF's local primary-attack action");
+                    }
+                    break;
+                case rf::CC_ACTION_SECONDARY_ATTACK:
+                    injected.down = g_secondary_fire_pressed;
+                    injected.just_pressed = g_secondary_fire_just_pressed;
+                    diagnostic_name = "Alternate Fire";
+                    break;
+                case rf::CC_ACTION_JUMP:
+                    injected.down = injected.just_pressed = g_jump_just_pressed;
+                    diagnostic_name = "Jump";
+                    break;
+                case rf::CC_ACTION_RELOAD:
+                    injected.down = injected.just_pressed = g_reload_just_pressed;
+                    diagnostic_name = "Reload";
+                    break;
+                case rf::CC_ACTION_CROUCH:
+                    // RF distinguishes hold-crouch from toggle-crouch through
+                    // PlayerSettings::toggle_crouch. Preserve the entire OpenXR
+                    // button hold and supply its rising edge separately so both
+                    // stock modes behave like a keyboard binding.
+                    injected.down = g_crouch_pressed;
+                    injected.just_pressed = g_crouch_just_pressed;
+                    diagnostic_name = "Crouch";
+                    break;
+                case rf::CC_ACTION_USE:
+                    // Left squeeze is contextual: near a gun's support point it
+                    // acquires the foregrip and must not also activate the world.
+                    // Away from the weapon it remains the ordinary Use action.
+                    injected.down = injected.just_pressed =
+                        g_left_grip_just_pressed &&
+                        !g_two_hand_support_available &&
+                        !g_two_hand_weapon_active;
+                    diagnostic_name = "Use";
+                    break;
+                case rf::CC_ACTION_PREV_WEAPON:
+                    injected.down = injected.just_pressed = g_previous_weapon_pulse;
+                    diagnostic_name = "Previous Weapon";
+                    break;
+                case rf::CC_ACTION_NEXT_WEAPON:
+                    injected.down = injected.just_pressed = g_next_weapon_pulse;
+                    diagnostic_name = "Next Weapon";
+                    break;
+                default:
+                    break;
+            }
+            if (diagnostic_name) {
+                log_input_edge(diagnostic_name, injected.just_pressed);
+            }
+#endif
+            return injected;
+        }
+
+        bool vr_control_input_down_injection(
+            rf::ControlConfig* controls, rf::ControlConfigAction action)
+        {
+#ifdef AF_ENABLE_OPENXR
+            return g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+                rf::local_player && controls == &rf::local_player->settings.controls &&
+                !g_menu_capture_active && !g_gameplay_input_blocked_until_release &&
+                action == rf::CC_ACTION_CROUCH && g_crouch_pressed;
+#else
+            (void)controls;
+            (void)action;
+            return false;
+#endif
+        }
+
+        FunHook<int(int&, int&, int&)> g_mouse_get_pos_hook{
+            0x0051E450,
+            [](int& x, int& y, int& z) {
+#ifdef AF_ENABLE_OPENXR
+                if (g_menu_capture_active && g_menu_pointer_valid) {
+                    x = g_menu_pointer_x;
+                    y = g_menu_pointer_y;
+                    z = 0;
+                    return 1;
+                }
+                if (should_block_physical_mouse_input()) {
+                    x = rf::gr::screen_width() / 2;
+                    y = rf::gr::screen_height() / 2;
+                    z = 0;
+                    return 1;
+                }
+#endif
+                return g_mouse_get_pos_hook.call_target(x, y, z);
+            },
+        };
+
+        FunHook<int(int)> g_mouse_was_button_pressed_hook{
+            0x0051E5D0,
+            [](int button) {
+#ifdef AF_ENABLE_OPENXR
+                if (g_menu_capture_active && button == 0 &&
+                    g_menu_pointer_valid && g_trigger_just_pressed) {
+                    return 1;
+                }
+                if (should_block_physical_mouse_input()) {
+                    return 0;
+                }
+#endif
+                return g_mouse_was_button_pressed_hook.call_target(button);
+            },
+        };
+
+        FunHook<bool(int)> g_mouse_button_down_hook{
+            0x0051E530,
+            [](int button) {
+                if (should_block_physical_mouse_input()) {
+                    return false;
+                }
+                return g_mouse_button_down_hook.call_target(button);
+            },
+        };
+
+        FunHook<bool(int)> g_mouse_button_double_clicked_hook{
+            0x0051E550,
+            [](int button) {
+                if (should_block_physical_mouse_input()) {
+                    return false;
+                }
+                return g_mouse_button_double_clicked_hook.call_target(button);
+            },
+        };
+
+        FunHook<int(int)> g_mouse_button_press_count_hook{
+            0x0051E590,
+            [](int button) {
+                if (should_block_physical_mouse_input()) {
+                    return 0;
+                }
+                return g_mouse_button_press_count_hook.call_target(button);
+            },
+        };
+
+        FunHook<int(int)> g_mouse_button_release_count_hook{
+            0x0051E5B0,
+            [](int button) {
+                if (should_block_physical_mouse_input()) {
+                    return 0;
+                }
+                return g_mouse_button_release_count_hook.call_target(button);
+            },
+        };
+
+        FunHook<bool(int)> g_mouse_button_released_hook{
+            0x0051E600,
+            [](int button) {
+                if (should_block_physical_mouse_input()) {
+                    return false;
+                }
+                return g_mouse_button_released_hook.call_target(button);
+            },
+        };
+
+        CallHook<void(rf::Player*)> g_gameplay_hud_do_frame_hook{
+            0x00432A18,
+            [](rf::Player* player) {
+#ifdef AF_ENABLE_OPENXR
+                if (g_openxr && g_openxr->is_session_running() &&
+                    !rf::is_multi && g_hud_capture_active) {
+                    // The normal call still provides a safe fallback on a frame
+                    // where OpenXR declined rendering or had no valid views.
+                    if (g_hud_rendered_frame != rf::frame_count) {
+                        g_gameplay_hud_do_frame_hook.call_target(player);
+                    }
+                    return;
+                }
+#endif
+                g_gameplay_hud_do_frame_hook.call_target(player);
+            },
+        };
+
+        CallHook<void(PortalRenderArgument, PortalRenderArgument,
+            PortalRenderArgument, PortalRenderArgument)> g_portal_render_hook{
+            0x00431FF8,
+            [](PortalRenderArgument viewer, PortalRenderArgument room,
+                PortalRenderArgument visibility, PortalRenderArgument optional_clip) {
+                bool stereo_world_rendered = false;
+#ifdef AF_ENABLE_OPENXR
+                if (g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+                    !g_rendering_weapon) {
+                    const rf::Vector3 base_eye_pos = rf::gr::eye_pos;
+                    const rf::Matrix3 base_eye_matrix = rf::gr::eye_matrix;
+                    const float base_horizontal_fov = addr_as_ref<float>(0x0059613C);
+                    bool renderer_was_redirected = false;
+
+                    // AFVR TODO: Replace RF's shared desktop CPU frustum with a
+                    // conservative stereo union if eye-edge portal culling is visible.
+                    const bool frame_submitted =
+                        g_openxr->render_frame([&](const OpenXrEyeRenderInfo& eye) {
+                            if (!g_tracking_origin.valid || g_recenter_requested) {
+                                capture_tracking_origin(eye.center_pose);
+                            }
+
+                            const rf::Vector3 relative_rf_position =
+                                relative_tracking_position(eye.view.pose.position);
+                            const rf::Matrix3 relative_rf_orientation =
+                                relative_tracking_orientation(eye.view.pose.orientation);
+                            if (!g_head_rotation_logged &&
+                                (std::abs(relative_rf_orientation.fvec.x) > 0.01f ||
+                                    std::abs(relative_rf_orientation.fvec.y) > 0.01f)) {
+                                g_head_rotation_logged = true;
+                                xlog::info("[AFVR] Tracked HMD rotation observed in the RF camera path");
+                            }
+                            g_hmd_relative_yaw = std::atan2(
+                                relative_rf_orientation.fvec.x,
+                                relative_rf_orientation.fvec.z);
+
+                            rf::Vector3 eye_pos = base_eye_pos +
+                                transform_direction(base_eye_matrix, relative_rf_position);
+                            rf::Matrix3 eye_matrix = compose_orientation(
+                                base_eye_matrix, relative_rf_orientation);
+
+                            // center_pose is identical for both eye callbacks.
+                            // Cache it in world space for simulation paths that
+                            // execute before the next stereo render traversal.
+                            g_head_pose_valid = transform_tracked_pose_to_world(
+                                eye.center_pose, base_eye_pos, base_eye_matrix,
+                                g_head_position, g_head_orientation);
+
+                            update_weapon_pose(base_eye_pos, base_eye_matrix);
+                            if (g_debug_weapon_at_hmd && g_weapon_pose_valid) {
+                                // Development discriminator: this bypasses the
+                                // controller translation and places the weapon
+                                // root at a known point in the active XR view.
+                                rf::Vector3 hmd_center_position{};
+                                rf::Matrix3 hmd_center_orientation{};
+                                if (transform_tracked_pose_to_world(
+                                        eye.center_pose, base_eye_pos, base_eye_matrix,
+                                        hmd_center_position, hmd_center_orientation)) {
+                                    g_weapon_render_position = hmd_center_position +
+                                        hmd_center_orientation.fvec * 0.5f;
+                                    g_weapon_render_orientation = hmd_center_orientation;
+                                }
+                            }
+
+                            // Refresh RF's CPU view transform and conservative
+                            // symmetric frustum before the GPU gets its exact
+                            // asymmetric OpenXR projection.
+                            rf::gr::setup_3d(eye_matrix, eye_pos,
+                                conservative_cpu_horizontal_fov(eye.view.fov), true, true);
+                            reset_object_render_flags();
+
+                            begin_d3d11_eye(
+                                eye.render_target_view, eye.depth_stencil_view,
+                                eye.width, eye.height,
+                                std::tan(eye.view.fov.angleLeft),
+                                std::tan(eye.view.fov.angleRight),
+                                std::tan(eye.view.fov.angleDown),
+                                std::tan(eye.view.fov.angleUp));
+                            renderer_was_redirected = true;
+                            begin_scene_render_pass(static_cast<int>(eye.eye_index));
+                            g_portal_render_hook.call_target(
+                                viewer, room, visibility, optional_clip);
+                            if (g_weapon_pose_valid && rf::local_player) {
+                                if (auto* entity = rf::entity_from_handle(
+                                        rf::local_player->entity_handle);
+                                    entity && entity->ai.current_primary_weapon >= 0) {
+                                    if (!g_weapon_render_requested_logged) {
+                                        g_weapon_render_requested_logged = true;
+                                        xlog::info("[AFVR] Generic VR FPGUN rendering active");
+                                    }
+                                    g_weapon_render_eye = static_cast<int>(eye.eye_index);
+                                    g_rendering_weapon = true;
+                                    render_tracked_fpgun(rf::local_player);
+                                    g_rendering_weapon = false;
+                                    g_weapon_render_eye = -1;
+                                }
+                            }
+                            end_scene_render_pass(static_cast<int>(eye.eye_index));
+                            finish_d3d11_eye();
+                            if (eye.eye_index == 1) {
+                                mirror_d3d11_eye(
+                                    eye.shader_resource_view, eye.width, eye.height);
+                            }
+                        }, [&](const OpenXrHudRenderInfo& hud) {
+                            if (!g_hud_capture_active || !rf::local_player) {
+                                return;
+                            }
+                            // Damage indicators and other directional HUD pieces
+                            // must see RF's center gameplay camera, not the right
+                            // eye globals left by the final stereo traversal.
+                            rf::Matrix3 hud_eye_matrix = base_eye_matrix;
+                            rf::Vector3 hud_eye_pos = base_eye_pos;
+                            rf::gr::setup_3d(hud_eye_matrix, hud_eye_pos,
+                                base_horizontal_fov, true, true);
+                            begin_d3d11_hud(
+                                hud.render_target_view, hud.width, hud.height);
+                            // This is RF's native singleplayer HUD routine. It is
+                            // deliberately invoked once here, outside both eye
+                            // passes, and the original later call site is gated.
+                            g_gameplay_hud_do_frame_hook.call_target(rf::local_player);
+                            if (rf::hud_render_weapon_cycle) {
+                                weapon_select_render();
+                                static bool weapon_cycle_logged = false;
+                                if (!weapon_cycle_logged) {
+                                    weapon_cycle_logged = true;
+                                    xlog::info("[AFVR] Weapon cycle rendered in the shared HUD quad");
+                                }
+                            }
+                            finish_d3d11_hud();
+                            g_hud_rendered_frame = rf::frame_count;
+                        });
+                    stereo_world_rendered = frame_submitted;
+
+                    rf::Matrix3 restored_eye_matrix = base_eye_matrix;
+                    rf::Vector3 restored_eye_pos = base_eye_pos;
+                    rf::gr::setup_3d(restored_eye_matrix, restored_eye_pos,
+                        base_horizontal_fov, true, true);
+                    if (renderer_was_redirected) {
+                        end_d3d11_vr_frame();
+                    }
+                }
+#endif
+
+                if (!stereo_world_rendered) {
+                    g_portal_render_hook.call_target(viewer, room, visibility, optional_clip);
+                }
+            },
+        };
+
+        CallHook<bool(const rf::Vector3&, float)> g_room_object_frustum_cull_hook{
+            0x004D35FD,
+            [](const rf::Vector3& position, float radius) {
+                // Portal traversal has already limited these submissions to
+                // visible rooms. RF's single-view sphere test can reject a
+                // stereo-eye object at this point, so make the eye passes
+                // conservative and leave final clipping to D3D11.
+                if (g_scene_render_pass == 0 || g_scene_render_pass == 1) {
+                    return false;
+                }
+                return g_room_object_frustum_cull_hook.call_target(position, radius);
+            },
+        };
+
+        CallHook<void(rf::Player*, rf::ControlInfo*)> g_local_player_controls_hook{
+            0x004A615D,
+            [](rf::Player* player, rf::ControlInfo* controls) {
+                g_local_player_controls_hook.call_target(player, controls);
+#ifdef AF_ENABLE_OPENXR
+                if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+                    player != rf::local_player || !controls) {
+                    return;
+                }
+
+                const auto& input = g_openxr->input_state();
+                const float stick_x = apply_stick_deadzone(input.left_thumbstick.x);
+                const float stick_y = apply_stick_deadzone(input.left_thumbstick.y);
+                const bool forward = stick_y > 0.0f;
+                const bool backward = stick_y < 0.0f;
+                const bool strafe_left = stick_x < 0.0f;
+                const bool strafe_right = stick_x > 0.0f;
+                log_input_edge("Forward", forward && !g_previous_forward);
+                log_input_edge("Backward", backward && !g_previous_backward);
+                log_input_edge("Strafe Left", strafe_left && !g_previous_strafe_left);
+                log_input_edge("Strafe Right", strafe_right && !g_previous_strafe_right);
+                g_previous_forward = forward;
+                g_previous_backward = backward;
+                g_previous_strafe_left = strafe_left;
+                g_previous_strafe_right = strafe_right;
+                const float yaw_sin = std::sin(g_hmd_relative_yaw);
+                const float yaw_cos = std::cos(g_hmd_relative_yaw);
+                controls->move.x += stick_x * yaw_cos + stick_y * yaw_sin;
+                controls->move.z += stick_y * yaw_cos - stick_x * yaw_sin;
+                const float horizontal_length = std::sqrt(
+                    controls->move.x * controls->move.x + controls->move.z * controls->move.z);
+                if (horizontal_length > 1.0f) {
+                    controls->move.x /= horizontal_length;
+                    controls->move.z /= horizontal_length;
+                }
+                if (!g_movement_input_logged &&
+                    (std::abs(stick_x) > 0.0f || std::abs(stick_y) > 0.0f)) {
+                    g_movement_input_logged = true;
+                    xlog::info("[AFVR] Movement input received");
+                }
+
+                const bool cycle_axis_dominant =
+                    std::abs(input.right_thumbstick.y) >= 0.7f &&
+                    std::abs(input.right_thumbstick.y) >=
+                        std::abs(input.right_thumbstick.x) + 0.1f;
+                const float turn_x = cycle_axis_dominant
+                    ? 0.0f : input.right_thumbstick.x;
+                if (auto* entity = rf::entity_from_handle(player->entity_handle)) {
+                    constexpr float pi = 3.14159265359f;
+                    constexpr float degrees_to_radians = pi / 180.0f;
+                    if (g_game_config.vr_turn_mode == GameConfig::VrTurnMode::smooth) {
+                        const float smooth_x = apply_stick_deadzone(turn_x);
+                        entity->control_data.phb.y += smooth_x *
+                            static_cast<float>(g_game_config.vr_smooth_turn_degrees_per_second.value()) *
+                            degrees_to_radians * rf::frametime;
+                        if (entity->control_data.phb.y > pi) {
+                            entity->control_data.phb.y -= 2.0f * pi;
+                        }
+                        else if (entity->control_data.phb.y < -pi) {
+                            entity->control_data.phb.y += 2.0f * pi;
+                        }
+                        g_snap_turn_latched = false;
+                        if (!g_smooth_turn_logged && std::abs(smooth_x) > 0.0f) {
+                            g_smooth_turn_logged = true;
+                            xlog::info("[AFVR] Smooth turn active ({} degrees/second)",
+                                g_game_config.vr_smooth_turn_degrees_per_second.value());
+                        }
+                    }
+                    else if (!g_snap_turn_latched && std::abs(turn_x) >= 0.7f) {
+                        const float snap_radians =
+                            static_cast<float>(g_game_config.vr_snap_turn_degrees.value()) *
+                            degrees_to_radians;
+                        entity->control_data.phb.y += std::copysign(snap_radians, turn_x);
+                        if (entity->control_data.phb.y > pi) {
+                            entity->control_data.phb.y -= 2.0f * pi;
+                        }
+                        else if (entity->control_data.phb.y < -pi) {
+                            entity->control_data.phb.y += 2.0f * pi;
+                        }
+                        g_snap_turn_latched = true;
+                        if (!g_snap_turn_logged) {
+                            g_snap_turn_logged = true;
+                            xlog::info("[AFVR] Snap turn triggered ({} degrees)",
+                                g_game_config.vr_snap_turn_degrees.value());
+                        }
+                    }
+                    else if (g_snap_turn_latched && std::abs(turn_x) <= 0.35f) {
+                        g_snap_turn_latched = false;
+                    }
+                }
+#endif
+            },
+        };
+
+        rf::CmdLineParam& get_vr_command_line_param()
+        {
+            // A function-local static is required: constructing RF objects from
+            // DllMain/global initialization can crash dependency checks.
+            static rf::CmdLineParam param{"-vr", "Enable singleplayer OpenXR mode", false};
+            return param;
+        }
+
+#ifdef AF_ENABLE_OPENXR
+        float* calibration_axis(rf::Vector3& value, std::string axis)
+        {
+            std::ranges::transform(axis, axis.begin(),
+                [](unsigned char character) {
+                    return static_cast<char>(std::tolower(character));
+                });
+            if (axis == "x" || axis == "pitch") {
+                return &value.x;
+            }
+            if (axis == "y" || axis == "yaw") {
+                return &value.y;
+            }
+            if (axis == "z" || axis == "roll") {
+                return &value.z;
+            }
+            rf::console::print("Invalid axis '{}'; use x/y/z or pitch/yaw/roll", axis);
+            return nullptr;
+        }
+
+        void report_weapon_calibration(int weapon_id,
+            const VrWeaponCalibration& calibration)
+        {
+            constexpr float radians_to_degrees = 57.2957795131f;
+            const rf::Vector3 rotation_degrees =
+                calibration.pivot_rotation * radians_to_degrees;
+            rf::console::print("VR weapon {} live calibration:", weapon_id);
+            rf::console::print("  move   {:.3f} {:.3f} {:.3f}",
+                calibration.grip_position.x, calibration.grip_position.y,
+                calibration.grip_position.z);
+            rf::console::print("  pivot  {:.3f} {:.3f} {:.3f}",
+                calibration.pivot_position.x, calibration.pivot_position.y,
+                calibration.pivot_position.z);
+            rf::console::print("  rotate {:.1f} {:.1f} {:.1f} degrees",
+                rotation_degrees.x, rotation_degrees.y, rotation_degrees.z);
+            rf::console::print("  muzzle {:.3f} {:.3f} {:.3f}",
+                calibration.muzzle_position.x, calibration.muzzle_position.y,
+                calibration.muzzle_position.z);
+            xlog::info(
+                "[AFVR] CALIBRATION weapon={} move=({:.3f},{:.3f},{:.3f}) pivot=({:.3f},{:.3f},{:.3f}) rotation_deg=({:.1f},{:.1f},{:.1f}) muzzle=({:.3f},{:.3f},{:.3f})",
+                weapon_id,
+                calibration.grip_position.x, calibration.grip_position.y,
+                calibration.grip_position.z,
+                calibration.pivot_position.x, calibration.pivot_position.y,
+                calibration.pivot_position.z,
+                rotation_degrees.x, rotation_degrees.y, rotation_degrees.z,
+                calibration.muzzle_position.x, calibration.muzzle_position.y,
+                calibration.muzzle_position.z);
+        }
+
+        void nudge_weapon_vector(rf::Vector3 VrWeaponCalibration::*member,
+            std::string axis, float delta)
+        {
+            auto* calibration = editable_weapon_calibration();
+            if (!calibration) {
+                return;
+            }
+            auto* component = calibration_axis(calibration->*member, std::move(axis));
+            if (!component) {
+                return;
+            }
+            *component += delta;
+            report_weapon_calibration(calibration->weapon_id, *calibration);
+        }
+#endif
+
+        ConsoleCommand2 g_vr_recenter_cmd{
+            "vr_recenter",
+            []() {
+                recenter_tracking();
+                rf::console::print("VR tracking recenter requested");
+            },
+            "Recenter OpenXR yaw and local tracking position",
+        };
+
+        ConsoleCommand2 g_vr_weapon_debug_hmd_cmd{
+            "vr_weapon_debug_hmd",
+            []() {
+                g_debug_weapon_at_hmd = !g_debug_weapon_at_hmd;
+                rf::console::print(
+                    "VR weapon 0.5 m HMD debug placement is {}",
+                    g_debug_weapon_at_hmd ? "enabled" : "disabled");
+            },
+            "Toggle a development-only weapon placement 0.5 m ahead of the HMD",
+        };
+
+        ConsoleCommand2 g_vr_input_debug_cmd{
+            "vr_input_debug",
+            []() {
+                g_input_debug = !g_input_debug;
+                rf::console::print("VR input diagnostics are {}",
+                    g_input_debug ? "enabled" : "disabled");
+            },
+            "Toggle edge-triggered VR gameplay input diagnostics",
+        };
+
+#ifdef AF_ENABLE_OPENXR
+        ConsoleCommand2 g_vr_weapon_move_cmd{
+            "vr_weapon_move",
+            [](std::string axis, float delta) {
+                nudge_weapon_vector(&VrWeaponCalibration::grip_position,
+                    std::move(axis), delta);
+            },
+            "Move the equipped VR weapon in aim-local metres",
+            "vr_weapon_move <x|y|z> <delta>; x=right, y=up, z=forward",
+        };
+
+        ConsoleCommand2 g_vr_weapon_pivot_cmd{
+            "vr_weapon_pivot",
+            [](std::string axis, float delta) {
+                nudge_weapon_vector(&VrWeaponCalibration::pivot_position,
+                    std::move(axis), delta);
+            },
+            "Adjust the equipped weapon's authored grip pivot in metres",
+            "vr_weapon_pivot <x|y|z> <delta>",
+        };
+
+        ConsoleCommand2 g_vr_weapon_rotate_cmd{
+            "vr_weapon_rotate",
+            [](std::string axis, float degrees) {
+                constexpr float degrees_to_radians = 0.0174532925199f;
+                nudge_weapon_vector(&VrWeaponCalibration::pivot_rotation,
+                    std::move(axis), degrees * degrees_to_radians);
+            },
+            "Rotate the equipped VR weapon around its calibrated pivot",
+            "vr_weapon_rotate <pitch|yaw|roll> <degrees>",
+        };
+
+        ConsoleCommand2 g_vr_muzzle_move_cmd{
+            "vr_muzzle_move",
+            [](std::string axis, float delta) {
+                nudge_weapon_vector(&VrWeaponCalibration::muzzle_position,
+                    std::move(axis), delta);
+            },
+            "Move the equipped weapon's firing origin in weapon-local metres",
+            "vr_muzzle_move <x|y|z> <delta>; x=right, y=up, z=forward",
+        };
+
+        ConsoleCommand2 g_vr_aim_yaw_cmd{
+            "vr_aim_yaw",
+            [](float degrees) {
+                g_weapon_aim_yaw_correction_degrees =
+                    std::clamp(degrees, -10.0f, 10.0f);
+                rf::console::print(
+                    "VR shared weapon aim yaw correction: {:.2f} degrees",
+                    g_weapon_aim_yaw_correction_degrees);
+                xlog::info(
+                    "[AFVR] Shared weapon aim yaw correction set to {:.2f} degrees",
+                    g_weapon_aim_yaw_correction_degrees);
+            },
+            "Set the shared horizontal VR weapon aim correction in degrees",
+            "vr_aim_yaw <degrees>; negative moves shots left, positive moves shots right",
+        };
+
+        ConsoleCommand2 g_vr_weapon_calibration_cmd{
+            "vr_weapon_calibration",
+            []() {
+                const int weapon_id = current_local_weapon_id();
+                if (weapon_id < 0) {
+                    rf::console::print("No local weapon is equipped");
+                    return;
+                }
+                report_weapon_calibration(weapon_id,
+                    weapon_calibration(weapon_id));
+            },
+            "Print the equipped weapon's live VR calibration to console and log",
+        };
+
+        ConsoleCommand2 g_vr_weapon_calibration_all_cmd{
+            "vr_weapon_calibration_all",
+            []() {
+                int reported = 0;
+                xlog::info("[AFVR] CALIBRATION SNAPSHOT BEGIN");
+                for (int weapon_id = 0;
+                    weapon_id < static_cast<int>(g_live_weapon_calibrations.size());
+                    ++weapon_id) {
+                    if (!g_live_weapon_calibration_active[weapon_id]) {
+                        continue;
+                    }
+                    report_weapon_calibration(weapon_id,
+                        g_live_weapon_calibrations[weapon_id]);
+                    ++reported;
+                }
+                xlog::info("[AFVR] CALIBRATION SNAPSHOT END ({} weapons)", reported);
+                rf::console::print(
+                    "Stored {} live weapon calibrations in AlpineFaction.log",
+                    reported);
+            },
+            "Store every changed weapon's final VR calibration in AlpineFaction.log",
+        };
+
+        ConsoleCommand2 g_vr_weapon_reset_cmd{
+            "vr_weapon_reset",
+            []() {
+                const int weapon_id = current_local_weapon_id();
+                if (weapon_id < 0 ||
+                    weapon_id >= static_cast<int>(g_live_weapon_calibration_active.size())) {
+                    rf::console::print("No calibratable local weapon is equipped");
+                    return;
+                }
+                g_live_weapon_calibration_active[weapon_id] = false;
+                rf::console::print("Reset VR weapon {} to its built-in calibration", weapon_id);
+                report_weapon_calibration(weapon_id,
+                    base_weapon_calibration(weapon_id));
+            },
+            "Reset the equipped weapon's live VR calibration",
+        };
+#endif
+
+    }
+
+    void register_command_line()
+    {
+        get_vr_command_line_param();
+    }
+
+    void install_render_hook()
+    {
+        // Alpine already owns 0x0043D4F0. Compose through its input-filter
+        // registry instead of installing the prototype's competing FunHook.
+        control_input_filter_add_press_injection(&vr_control_input_injection);
+        control_input_filter_add_down_injection(&vr_control_input_down_injection);
+        g_mouse_get_pos_hook.install();
+        g_mouse_was_button_pressed_hook.install();
+        g_mouse_button_down_hook.install();
+        g_mouse_button_double_clicked_hook.install();
+        g_mouse_button_press_count_hook.install();
+        g_mouse_button_release_count_hook.install();
+        g_mouse_button_released_hook.install();
+        g_player_fpgun_vmesh_render_hook.install();
+        g_player_fpgun_silencer_render_hook.install();
+        g_player_fpgun_render_hook.install();
+        g_local_player_controls_hook.install();
+        g_room_object_frustum_cull_hook.install();
+        g_portal_render_hook.install();
+        g_gameplay_hud_do_frame_hook.install();
+    }
+
+    void register_console_commands()
+    {
+        g_vr_recenter_cmd.register_cmd();
+        g_vr_weapon_debug_hmd_cmd.register_cmd();
+        g_vr_input_debug_cmd.register_cmd();
+#ifdef AF_ENABLE_OPENXR
+        g_vr_weapon_move_cmd.register_cmd();
+        g_vr_weapon_pivot_cmd.register_cmd();
+        g_vr_weapon_rotate_cmd.register_cmd();
+        g_vr_muzzle_move_cmd.register_cmd();
+        g_vr_aim_yaw_cmd.register_cmd();
+        g_vr_weapon_calibration_cmd.register_cmd();
+        g_vr_weapon_calibration_all_cmd.register_cmd();
+        g_vr_weapon_reset_cmd.register_cmd();
+#endif
+    }
+
+    void timing_game_frame_begin()
+    {
+#ifdef AF_ENABLE_OPENXR
+        const auto now = TimingDiagnostics::Clock::now();
+        if (!g_openxr || !g_openxr->is_session_running()) {
+            g_timing.reset(now);
+            return;
+        }
+        if (g_timing.window_start == TimingDiagnostics::Clock::time_point{}) {
+            g_timing.reset(now);
+        }
+        g_timing.game_frame_start = now;
+        ++g_timing.game_frames;
+#endif
+    }
+
+    void timing_game_frame_end()
+    {
+#ifdef AF_ENABLE_OPENXR
+        const auto now = TimingDiagnostics::Clock::now();
+        if (g_timing.game_frame_start != TimingDiagnostics::Clock::time_point{}) {
+            g_timing.game_cpu_ms += std::chrono::duration<double, std::milli>(
+                now - g_timing.game_frame_start).count();
+            g_timing.rf_frametime_ms +=
+                static_cast<double>(rf::frametime) * 1000.0;
+            g_timing.game_frame_start = {};
+        }
+        maybe_log_timing(now);
+#endif
+    }
+
+    void timing_note_xr_wait(double wait_ms, double return_interval_ms,
+        double runtime_target_hz)
+    {
+#ifdef AF_ENABLE_OPENXR
+        ++g_timing.xr_waits;
+        g_timing.xr_wait_ms += wait_ms;
+        if (return_interval_ms > 0.0) {
+            ++g_timing.xr_wait_return_intervals;
+            g_timing.xr_wait_return_interval_ms += return_interval_ms;
+        }
+        if (runtime_target_hz > 0.0) {
+            g_timing.runtime_target_hz = runtime_target_hz;
+        }
+#else
+        (void)wait_ms;
+        (void)return_interval_ms;
+        (void)runtime_target_hz;
+#endif
+    }
+
+    void timing_note_xr_submission()
+    {
+#ifdef AF_ENABLE_OPENXR
+        ++g_timing.xr_submissions;
+#endif
+    }
+
+    void timing_note_desktop_present(double duration_ms)
+    {
+#ifdef AF_ENABLE_OPENXR
+        ++g_timing.desktop_presents;
+        g_timing.desktop_present_ms += duration_ms;
+#else
+        (void)duration_ms;
+#endif
+    }
+
+    void after_game_init()
+    {
+        g_requested = get_vr_command_line_param().found();
+#ifdef AF_ENABLE_OPENXR
+        xlog::info("[AFVR] AlpineFaction VR game patch loaded");
+        xlog::info("[AFVR] Effective game command line: {}", GetCommandLineA());
+        xlog::info("[AFVR] -vr detected: {}", g_requested ? "yes" : "no");
+        const char* renderer_name = "unknown";
+        switch (g_game_config.renderer.value()) {
+            case GameConfig::Renderer::d3d8: renderer_name = "Direct3D 8"; break;
+            case GameConfig::Renderer::d3d9: renderer_name = "Direct3D 9"; break;
+            case GameConfig::Renderer::d3d11: renderer_name = "Direct3D 11"; break;
+        }
+        xlog::info("[AFVR] Active renderer: {}", renderer_name);
+#endif
+        if (!g_requested) {
+            return;
+        }
+
+        xlog::info("[AFVR] VR mode requested");
+        xlog::info("[AFVR] Singleplayer campaign mode only; multiplayer is not supported in VR mode");
+
+        if (rf::is_dedicated_server) {
+            xlog::warn("[AFVR] Dedicated servers are not supported in VR mode; continuing without VR");
+            return;
+        }
+
+        if (g_game_config.renderer != GameConfig::Renderer::d3d11) {
+            xlog::warn("[AFVR] AlpineFaction VR requires the D3D11 renderer; VR initialization skipped");
+            return;
+        }
+
+#ifdef AF_ENABLE_OPENXR
+        auto binding = get_d3d11_renderer_binding();
+        if (!binding) {
+            xlog::error("[AFVR] The Alpine Faction D3D11 device/context is unavailable; VR initialization skipped");
+            return;
+        }
+
+        auto* openxr = new OpenXrContext;
+        if (!openxr->initialize(binding.device)) {
+            delete openxr;
+            xlog::warn("[AFVR] OpenXR initialization failed; continuing in flat mode");
+            return;
+        }
+
+        g_openxr = openxr;
+        xlog::info("[AFVR] OpenXR bootstrap initialized");
+#else
+        xlog::warn("[AFVR] This build was compiled without OpenXR support; continuing in flat mode");
+#endif
+    }
+
+    void update()
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (g_openxr && !g_openxr->is_session_running()) {
+            g_tracking_origin.valid = false;
+            g_recenter_requested = true;
+            g_head_rotation_logged = false;
+            g_head_pose_valid = false;
+        }
+        if (g_openxr && !g_openxr->poll_events()) {
+            xlog::warn("[AFVR] OpenXR requested shutdown; returning to flat mode");
+            delete g_openxr;
+            g_openxr = nullptr;
+        }
+        if (g_openxr && rf::is_multi) {
+            xlog::warn("[AFVR] Multiplayer entered while VR was active; shutting down OpenXR and continuing in flat mode");
+            delete g_openxr;
+            g_openxr = nullptr;
+            update_game_frame_limiter(false);
+            return;
+        }
+        update_game_frame_limiter(
+            g_openxr && g_openxr->is_session_running());
+        if (g_openxr) {
+            if (g_openxr->is_session_running()) {
+                (void)g_openxr->wait_frame();
+            }
+            (void)g_openxr->sync_actions();
+            const rf::GameState game_state = rf::gameseq_get_state();
+            g_menu_capture_active = g_openxr->is_session_running() &&
+                !rf::is_multi && is_supported_vr_menu_state();
+            if (g_menu_capture_active) {
+                g_two_hand_support_available = false;
+                g_two_hand_weapon_active = false;
+                g_two_hand_weapon_id = -1;
+            }
+            g_hud_capture_active = g_openxr->is_session_running() &&
+                !rf::is_multi && game_state == rf::GS_GAMEPLAY &&
+                !g_menu_capture_active;
+            g_openxr->set_hud_active(g_hud_capture_active);
+            if (g_menu_capture_active && game_state != g_last_menu_state) {
+                g_openxr->set_menu_active(false);
+                g_openxr->set_menu_active(true);
+            }
+            else {
+                g_openxr->set_menu_active(g_menu_capture_active);
+            }
+            g_last_menu_state = game_state;
+            if (!g_menu_capture_active) {
+                g_menu_pointer_valid = false;
+            }
+            const auto& input = g_openxr->input_state();
+            const bool trigger_pressed =
+                g_openxr->is_session_running() &&
+                input.right_trigger >= 0.55f;
+            g_trigger_just_pressed =
+                trigger_pressed && !g_previous_trigger_pressed;
+            g_trigger_pressed = trigger_pressed;
+            g_previous_trigger_pressed = trigger_pressed;
+
+            g_reload_pressed = g_openxr->is_session_running() && input.reload;
+            g_jump_pressed = g_openxr->is_session_running() && input.jump;
+            g_crouch_pressed = g_openxr->is_session_running() && input.crouch;
+            g_menu_button_pressed = g_openxr->is_session_running() && input.menu;
+            g_left_grip_pressed = g_openxr->is_session_running() && input.grip[0] >= 0.55f;
+            g_reload_just_pressed = g_reload_pressed && !g_previous_reload;
+            g_jump_just_pressed = g_jump_pressed && !g_previous_jump;
+            g_crouch_just_pressed = g_crouch_pressed && !g_previous_crouch;
+            g_menu_button_just_pressed = g_menu_button_pressed &&
+                !g_previous_menu_button;
+            g_left_grip_just_pressed = g_left_grip_pressed && !g_previous_left_grip;
+            g_previous_reload = g_reload_pressed;
+            g_previous_jump = g_jump_pressed;
+            g_previous_crouch = g_crouch_pressed;
+            g_previous_menu_button = g_menu_button_pressed;
+            g_previous_left_grip = g_left_grip_pressed;
+
+            // Record the first edge of the controls under live acceptance so a
+            // normal release log can distinguish OpenXR binding delivery from
+            // RF action injection without enabling noisy input debugging.
+            if (g_jump_just_pressed && !g_jump_semantic_logged) {
+                g_jump_semantic_logged = true;
+                xlog::info("[AFVR] OpenXR jump action received (right B)");
+            }
+            if (g_crouch_just_pressed && !g_crouch_semantic_logged) {
+                g_crouch_semantic_logged = true;
+                xlog::info("[AFVR] OpenXR crouch action received (left face button)");
+            }
+            if (g_menu_button_just_pressed && !g_menu_semantic_logged) {
+                g_menu_semantic_logged = true;
+                xlog::info("[AFVR] OpenXR pause/menu action received");
+            }
+
+            const bool right_grip_pressed =
+                g_openxr->is_session_running() && input.grip[1] >= 0.55f;
+            if (g_menu_capture_active) {
+                g_gameplay_input_blocked_until_release = true;
+            }
+            else if (g_gameplay_input_blocked_until_release &&
+                !trigger_pressed && !right_grip_pressed && !g_left_grip_pressed &&
+                !g_reload_pressed && !g_jump_pressed && !g_crouch_pressed &&
+                std::abs(input.right_thumbstick.y) <= 0.35f) {
+                g_gameplay_input_blocked_until_release = false;
+            }
+            if (g_menu_capture_active && trigger_pressed) {
+                g_fire_blocked_until_trigger_release = true;
+            }
+            else if (!trigger_pressed) {
+                g_fire_blocked_until_trigger_release = false;
+            }
+            if (g_trigger_just_pressed) {
+                g_fire_mode_secondary = right_grip_pressed;
+            }
+            else if (!trigger_pressed) {
+                g_fire_mode_secondary = false;
+            }
+            g_primary_fire_pressed = trigger_pressed && !g_fire_mode_secondary &&
+                !g_menu_capture_active && !g_fire_blocked_until_trigger_release;
+            g_secondary_fire_pressed = trigger_pressed && g_fire_mode_secondary &&
+                !g_menu_capture_active && !g_fire_blocked_until_trigger_release;
+            g_primary_fire_just_pressed = g_primary_fire_pressed &&
+                !g_previous_primary_fire;
+            g_secondary_fire_just_pressed = g_secondary_fire_pressed &&
+                !g_previous_secondary_fire;
+            g_previous_primary_fire = g_primary_fire_pressed;
+            g_previous_secondary_fire = g_secondary_fire_pressed;
+
+            g_previous_weapon_pulse = false;
+            g_next_weapon_pulse = false;
+            if (!g_menu_capture_active &&
+                !g_gameplay_input_blocked_until_release) {
+                const float cycle_y = input.right_thumbstick.y;
+                const float turn_x = input.right_thumbstick.x;
+                const bool vertical_dominant =
+                    std::abs(cycle_y) >= std::abs(turn_x) + 0.1f;
+                if (!g_weapon_cycle_latched && vertical_dominant &&
+                    std::abs(cycle_y) >= 0.7f) {
+                    g_previous_weapon_pulse = cycle_y > 0.0f;
+                    g_next_weapon_pulse = cycle_y < 0.0f;
+                    g_weapon_cycle_latched = true;
+                }
+                else if (g_weapon_cycle_latched && std::abs(cycle_y) <= 0.35f) {
+                    g_weapon_cycle_latched = false;
+                }
+            }
+            else if (std::abs(input.right_thumbstick.y) <= 0.35f) {
+                g_weapon_cycle_latched = false;
+            }
+
+            if ((g_menu_capture_active && g_jump_just_pressed) ||
+                g_menu_button_just_pressed) {
+                // RF has no exported menu-back semantic. Feed Escape into its
+                // internal key event queue (never into Windows input).
+                rf::key_process_event(rf::KEY_ESC, 1, 0);
+                rf::key_process_event(rf::KEY_ESC, 0, 0);
+                log_input_edge(g_menu_capture_active ? "Menu Back" : "Pause Menu", true);
+            }
+        }
+#endif
+    }
+
+    void submit_menu_frame()
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running() || !g_menu_capture_active) {
+            return;
+        }
+        static bool copy_failure_logged = false;
+        (void)g_openxr->render_menu_frame([&](const OpenXrMenuRenderInfo& menu) {
+            if (!copy_d3d11_menu(menu.texture) && !copy_failure_logged) {
+                copy_failure_logged = true;
+                xlog::error("[AFVR] RF menu target could not be copied to the OpenXR quad");
+            }
+            float u = 0.0f;
+            float v = 0.0f;
+            g_menu_pointer_valid = g_openxr->get_menu_pointer(u, v);
+            if (g_menu_pointer_valid) {
+                g_menu_pointer_x = std::clamp(
+                    static_cast<int>(u * rf::gr::screen_width()),
+                    0, std::max(rf::gr::screen_width() - 1, 0));
+                g_menu_pointer_y = std::clamp(
+                    static_cast<int>(v * rf::gr::screen_height()),
+                    0, std::max(rf::gr::screen_height() - 1, 0));
+            }
+        });
+#endif
+    }
+
+    void shutdown()
+    {
+#ifdef AF_ENABLE_OPENXR
+        update_game_frame_limiter(false);
+        if (g_openxr) {
+            delete g_openxr;
+            g_openxr = nullptr;
+        }
+#endif
+        g_requested = false;
+#ifdef AF_ENABLE_OPENXR
+        g_tracking_origin.valid = false;
+        g_recenter_requested = true;
+        g_head_rotation_logged = false;
+        g_hmd_relative_yaw = 0.0f;
+        g_movement_input_logged = false;
+        g_snap_turn_logged = false;
+        g_smooth_turn_logged = false;
+        g_snap_turn_latched = false;
+        g_rendering_weapon = false;
+        g_rendering_fpgun_body = false;
+        g_weapon_pose_valid = false;
+        g_weapon_aim_pose_valid = false;
+        g_two_hand_support_available = false;
+        g_two_hand_weapon_active = false;
+        g_two_hand_weapon_id = -1;
+        g_right_controller_pose_valid = false;
+        g_head_pose_valid = false;
+        g_current_weapon_id = -1;
+        g_debug_weapon_at_hmd = false;
+        g_weapon_render_eye = -1;
+        g_weapon_render_requested_logged = false;
+        g_player_render_reached_logged = false;
+        g_weapon_mesh_render_reached_logged = false;
+        g_final_weapon_transform_logged = false;
+        g_weapon_eye_draw_logged = {};
+        g_two_hand_weapon_logged = {};
+        g_trigger_pressed = false;
+        g_trigger_just_pressed = false;
+        g_previous_trigger_pressed = false;
+        g_trigger_action_logged = false;
+        g_frame_limiter_bypassed = false;
+        g_menu_capture_active = false;
+        g_hud_capture_active = false;
+        g_hud_rendered_frame = -1;
+        g_menu_pointer_valid = false;
+        g_previous_reload = false;
+        g_previous_jump = false;
+        g_previous_crouch = false;
+        g_previous_menu_button = false;
+        g_previous_left_grip = false;
+        g_previous_primary_fire = false;
+        g_previous_secondary_fire = false;
+        g_fire_mode_secondary = false;
+        g_fire_blocked_until_trigger_release = false;
+        g_gameplay_input_blocked_until_release = false;
+        g_reload_pressed = false;
+        g_reload_just_pressed = false;
+        g_jump_pressed = false;
+        g_jump_just_pressed = false;
+        g_crouch_pressed = false;
+        g_crouch_just_pressed = false;
+        g_menu_button_pressed = false;
+        g_menu_button_just_pressed = false;
+        g_left_grip_pressed = false;
+        g_left_grip_just_pressed = false;
+        g_primary_fire_pressed = false;
+        g_primary_fire_just_pressed = false;
+        g_secondary_fire_pressed = false;
+        g_secondary_fire_just_pressed = false;
+        g_weapon_cycle_latched = false;
+        g_previous_weapon_pulse = false;
+        g_next_weapon_pulse = false;
+        g_jump_semantic_logged = false;
+        g_crouch_semantic_logged = false;
+        g_menu_semantic_logged = false;
+        g_previous_forward = false;
+        g_previous_backward = false;
+        g_previous_strafe_left = false;
+        g_previous_strafe_right = false;
+        g_last_menu_state = rf::GS_INIT;
+        g_weapon_calibration_logged = {};
+        g_live_weapon_calibration_active = {};
+#endif
+    }
+
+    bool is_requested()
+    {
+        return g_requested;
+    }
+
+    bool is_initialized()
+    {
+#ifdef AF_ENABLE_OPENXR
+        return g_openxr && g_openxr->is_initialized();
+#else
+        return false;
+#endif
+    }
+
+    bool is_session_running()
+    {
+#ifdef AF_ENABLE_OPENXR
+        return g_openxr && g_openxr->is_session_running();
+#else
+        return false;
+#endif
+    }
+
+    bool should_block_physical_mouse_input()
+    {
+#ifdef AF_ENABLE_OPENXR
+        return g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+            rf::gameseq_get_state() != rf::GS_MAIN_MENU;
+#else
+        return false;
+#endif
+    }
+
+    void recenter_tracking()
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (g_openxr) {
+            g_recenter_requested = true;
+            if (g_menu_capture_active) {
+                g_openxr->set_menu_active(false);
+                g_openxr->set_menu_active(true);
+            }
+        }
+#endif
+    }
+
+    void begin_scene_render_pass(int pass)
+    {
+        if (pass < 0 || pass >= static_cast<int>(g_scene_render_stats.size())) {
+            return;
+        }
+        g_scene_render_pass = pass;
+        if (pass == 0 && !g_scene_render_stats_logged) {
+            g_scene_render_stats = {};
+            g_scene_render_stats_collecting = true;
+        }
+        if (!g_scene_render_stats_collecting) {
+            return;
+        }
+        ++g_scene_render_stats[pass].portal_traversals;
+    }
+
+    void end_scene_render_pass(int pass)
+    {
+        if (g_scene_render_pass != pass) {
+            return;
+        }
+        g_scene_render_pass = -1;
+        if (!g_scene_render_stats_collecting) {
+            return;
+        }
+        if (pass == 1 && !g_scene_render_stats_logged) {
+            ++g_scene_render_diagnostic_frames;
+            const bool characters_reached = std::ranges::any_of(
+                g_scene_render_stats, [](const SceneRenderStats& stats) {
+                    return stats.character_meshes > 0;
+                });
+            if (!characters_reached && g_scene_render_diagnostic_frames < 120) {
+                g_scene_render_stats_collecting = false;
+                return;
+            }
+            constexpr std::array names{"left", "right"};
+            for (size_t index = 0; index < names.size(); ++index) {
+                const auto& stats = g_scene_render_stats[index];
+                xlog::info("[AFVR] First-frame {} draws: portal {}, static {}, movers {}, standard meshes {}, character meshes {}",
+                    names[index], stats.portal_traversals, stats.static_solids,
+                    stats.movable_solids, stats.standard_meshes, stats.character_meshes);
+            }
+            g_scene_render_stats_logged = true;
+            g_scene_render_stats_collecting = false;
+        }
+    }
+
+    void note_static_solid_draw()
+    {
+        if (g_scene_render_stats_collecting && g_scene_render_pass >= 0) {
+            ++g_scene_render_stats[g_scene_render_pass].static_solids;
+        }
+    }
+
+    void note_movable_solid_draw()
+    {
+        if (g_scene_render_stats_collecting && g_scene_render_pass >= 0) {
+            ++g_scene_render_stats[g_scene_render_pass].movable_solids;
+        }
+    }
+
+    void note_standard_mesh_draw()
+    {
+        if (g_scene_render_stats_collecting && g_scene_render_pass >= 0) {
+            ++g_scene_render_stats[g_scene_render_pass].standard_meshes;
+        }
+    }
+
+    void note_character_mesh_draw()
+    {
+        if (g_scene_render_stats_collecting && g_scene_render_pass >= 0) {
+            ++g_scene_render_stats[g_scene_render_pass].character_meshes;
+        }
+    }
+
+    bool is_rendering_weapon()
+    {
+        return g_rendering_weapon;
+    }
+
+    bool should_render_fpgun_texture(int bitmap_handle)
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_rendering_fpgun_body || bitmap_handle < 0) {
+            return true;
+        }
+        const char* filename = rf::bm::get_filename(bitmap_handle);
+        if (!filename || !filename[0]) {
+            return true;
+        }
+        std::string normalized{filename};
+        std::ranges::transform(normalized, normalized.begin(),
+            [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+        const bool desktop_hand_material =
+            normalized == "hand1st.tga" || normalized == "envirohand.tga";
+
+        // Stock fp_glock.v3c contains body, both desktop arms/hands, moving
+        // clip, muzzle/silencer tags and bones in one animated VMesh. Report
+        // its distinct renderable material chunks once while filtering only
+        // the two dedicated hand materials.
+        if (g_current_weapon_id == 0x03 && g_weapon_render_eye == 0) {
+            static std::unordered_set<std::string> reported_materials;
+            if (reported_materials.emplace(normalized).second) {
+                xlog::info("[AFVR] Glock FPGUN material '{}' -> {}",
+                    normalized, desktop_hand_material ? "hidden desktop hands/arms" : "kept weapon/detail");
+            }
+        }
+        return !desktop_hand_material;
+#else
+        (void)bitmap_handle;
+        return true;
+#endif
+    }
+
+    bool get_weapon_muzzle_pose(rf::Vector3& position, rf::Matrix3& orientation)
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+            !g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
+            return false;
+        }
+        position = g_weapon_aim_position;
+        orientation = g_weapon_aim_orientation;
+        return true;
+#else
+        (void)position;
+        (void)orientation;
+        return false;
+#endif
+    }
+
+    bool get_head_pose(rf::Vector3& position, rf::Matrix3& orientation)
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+            !g_head_pose_valid) {
+            return false;
+        }
+        position = g_head_position;
+        orientation = g_head_orientation;
+        return true;
+#else
+        (void)position;
+        (void)orientation;
+        return false;
+#endif
+    }
+
+    bool get_right_controller_pose(rf::Vector3& position,
+        rf::Matrix3& orientation)
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+            !g_right_controller_pose_valid) {
+            return false;
+        }
+        position = g_right_controller_position;
+        orientation = g_right_controller_orientation;
+        return true;
+#else
+        (void)position;
+        (void)orientation;
+        return false;
+#endif
+    }
+
+    bool is_primary_trigger_active()
+    {
+#ifdef AF_ENABLE_OPENXR
+        return g_trigger_pressed;
+#else
+        return false;
+#endif
+    }
+}

@@ -1,4 +1,5 @@
 #include <cassert>
+#include <chrono>
 #include <dxgi1_4.h>
 #include <dxgi1_5.h>
 #include <xlog/xlog.h>
@@ -8,6 +9,7 @@
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
+#include "../../vr/vr.h"
 #include "../../misc/alpine_settings.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
@@ -88,7 +90,7 @@ namespace gr::d3d11
         if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             swap_chain_->SetFullscreenState(FALSE, nullptr);
         }
-        if (frame_latency_wait_handle_) {
+        if (frame_latency_wait_handle_ && !afvr::is_session_running()) {
             CloseHandle(frame_latency_wait_handle_);
             frame_latency_wait_handle_ = nullptr;
         }
@@ -705,17 +707,33 @@ namespace gr::d3d11
             // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
             render_context_->invalidate_cached_state();
         }
+        // Alpine composes its final desktop image through scene resolve and the
+        // gamma pass. Submit the menu only after those steps so the OpenXR quad
+        // receives the exact pixels that are visible in the desktop window.
+        afvr::submit_menu_frame();
         xlog::trace("Presenting frame {}", rf::frame_count);
-        UINT sync_interval = g_alpine_system_config.vsync ? 1 : 0;
+        const bool vr_session_running = afvr::is_session_running();
+        UINT sync_interval = !vr_session_running && g_alpine_system_config.vsync ? 1 : 0;
+        if (vr_session_running && !vr_present_vsync_disabled_logged_) {
+            vr_present_vsync_disabled_logged_ = true;
+            xlog::info("[AFVR] Desktop mirror vsync disabled for VR");
+        }
         // DXGI_PRESENT_ALLOW_TEARING can only be combined with sync_interval 0, and only
         // works when the swap chain was created with DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.
         UINT present_flags = 0;
         if (allow_tearing_ && sync_interval == 0) {
             present_flags |= DXGI_PRESENT_ALLOW_TEARING;
         }
+        const auto present_start = std::chrono::steady_clock::now();
         DF_GR_D3D11_CHECK_HR(
             swap_chain_->Present(sync_interval, present_flags)
         );
+        if (vr_session_running) {
+            const auto present_end = std::chrono::steady_clock::now();
+            afvr::timing_note_desktop_present(
+                std::chrono::duration<double, std::milli>(
+                    present_end - present_start).count());
+        }
         // Flip swap effect clears render target after Present call
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         // Note: it would be better to call update_per_frame_constants after frametime_calculate
@@ -889,6 +907,183 @@ namespace gr::d3d11
         }
     }
 
+    void Renderer::begin_vr_eye(ID3D11RenderTargetView* render_target_view,
+        ID3D11DepthStencilView* depth_stencil_view, int width, int height,
+        const Projection& projection)
+    {
+        dyn_geo_renderer_->flush();
+        if (!vr_saved_projection_) {
+            vr_saved_projection_ = render_context_->projection();
+        }
+
+        vr_eye_render_target_view_ = render_target_view;
+        vr_eye_depth_stencil_view_ = depth_stencil_view;
+        vr_eye_width_ = width;
+        vr_eye_height_ = height;
+        render_context_->set_render_target(render_target_view, depth_stencil_view);
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(width);
+        viewport.Height = static_cast<float>(height);
+        viewport.MaxDepth = 1.0f;
+        context_->RSSetViewports(1, &viewport);
+        // RF's current 2D color is mutable global state and differs after the
+        // first stereo traversal. It is not a valid world clear color.
+        constexpr float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
+        context_->ClearRenderTargetView(render_target_view, black);
+        render_context_->zbuffer_clear();
+        render_context_->update_view_proj_transform(projection);
+        outline_renderer_->begin_frame();
+    }
+
+    void Renderer::end_vr_frame()
+    {
+        if (!vr_saved_projection_) {
+            return;
+        }
+
+        dyn_geo_renderer_->flush();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+        render_context_->update_view_proj_transform(*vr_saved_projection_);
+        vr_saved_projection_.reset();
+    }
+
+    void Renderer::finish_vr_eye()
+    {
+        dyn_geo_renderer_->flush();
+        render_context_->set_render_target(nullptr, nullptr);
+        vr_eye_render_target_view_ = nullptr;
+        vr_eye_depth_stencil_view_ = nullptr;
+        vr_eye_width_ = 0;
+        vr_eye_height_ = 0;
+    }
+
+    void Renderer::begin_vr_hud(ID3D11RenderTargetView* render_target_view,
+        int width, int height)
+    {
+        dyn_geo_renderer_->flush();
+        render_context_->invalidate_mode();
+        render_context_->set_render_target(render_target_view, nullptr);
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(width);
+        viewport.Height = static_cast<float>(height);
+        viewport.MaxDepth = 1.0f;
+        context_->RSSetViewports(1, &viewport);
+        constexpr float transparent_black[] = {0.0f, 0.0f, 0.0f, 0.0f};
+        context_->ClearRenderTargetView(render_target_view, transparent_black);
+    }
+
+    void Renderer::finish_vr_hud()
+    {
+        dyn_geo_renderer_->flush();
+        render_context_->set_render_target(nullptr, nullptr);
+    }
+
+    bool Renderer::copy_presented_target(ID3D11Texture2D* destination)
+    {
+        if (!destination || !back_buffer_) {
+            return false;
+        }
+        dyn_geo_renderer_->flush();
+        D3D11_TEXTURE2D_DESC source_desc{};
+        D3D11_TEXTURE2D_DESC destination_desc{};
+        back_buffer_->GetDesc(&source_desc);
+        destination->GetDesc(&destination_desc);
+        if (source_desc.Width != destination_desc.Width ||
+            source_desc.Height != destination_desc.Height) {
+            return false;
+        }
+        // The gamma pass leaves the swap-chain image bound as an RTV. D3D11
+        // forbids copying a resource while it is still bound for output.
+        context_->OMSetRenderTargets(0, nullptr, nullptr);
+        if (source_desc.SampleDesc.Count > 1) {
+            context_->ResolveSubresource(destination, 0, back_buffer_, 0,
+                destination_desc.Format);
+        }
+        else {
+            context_->CopyResource(destination, back_buffer_);
+        }
+        static bool menu_copy_logged = false;
+        if (!menu_copy_logged) {
+            menu_copy_logged = true;
+            xlog::info(
+                "[AFVR] Menu quad copied from Alpine's final presented target (source format {}, destination format {})",
+                static_cast<int>(source_desc.Format),
+                static_cast<int>(destination_desc.Format));
+        }
+        return true;
+    }
+
+    void Renderer::mirror_vr_eye(ID3D11ShaderResourceView* source_view,
+        int source_width, int source_height)
+    {
+        if (!source_view || source_width <= 0 || source_height <= 0) {
+            return;
+        }
+
+        dyn_geo_renderer_->flush();
+        if (!vr_mirror_vertex_buffer_) {
+            constexpr GpuTransformedVertex vertices[] = {
+                {-1.0f,  1.0f, 0.0f, 1.0f, -1, 0.0f, 0.0f},
+                { 1.0f,  1.0f, 0.0f, 1.0f, -1, 1.0f, 0.0f},
+                {-1.0f, -1.0f, 0.0f, 1.0f, -1, 0.0f, 1.0f},
+                { 1.0f, -1.0f, 0.0f, 1.0f, -1, 1.0f, 1.0f},
+            };
+            D3D11_BUFFER_DESC buffer_desc{};
+            buffer_desc.ByteWidth = sizeof(vertices);
+            buffer_desc.Usage = D3D11_USAGE_IMMUTABLE;
+            buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA initial_data{};
+            initial_data.pSysMem = vertices;
+            DF_GR_D3D11_CHECK_HR(device_->CreateBuffer(
+                &buffer_desc, &initial_data, &vr_mirror_vertex_buffer_));
+        }
+
+        D3D11_TEXTURE2D_DESC target_desc{};
+        default_render_target_->GetDesc(&target_desc);
+        const float target_aspect = static_cast<float>(target_desc.Width) / target_desc.Height;
+        const float source_aspect = static_cast<float>(source_width) / source_height;
+        D3D11_VIEWPORT viewport{};
+        viewport.MaxDepth = 1.0f;
+        if (source_aspect > target_aspect) {
+            viewport.Width = static_cast<float>(target_desc.Width);
+            viewport.Height = viewport.Width / source_aspect;
+            viewport.TopLeftY = (static_cast<float>(target_desc.Height) - viewport.Height) * 0.5f;
+        }
+        else {
+            viewport.Height = static_cast<float>(target_desc.Height);
+            viewport.Width = viewport.Height * source_aspect;
+            viewport.TopLeftX = (static_cast<float>(target_desc.Width) - viewport.Width) * 0.5f;
+        }
+
+        render_context_->set_render_target(default_render_target_view_, nullptr);
+        constexpr float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
+        context_->ClearRenderTargetView(default_render_target_view_, black);
+        context_->RSSetViewports(1, &viewport);
+        render_context_->set_vertex_shader(
+            shader_manager_->get_vertex_shader(VertexShaderId::transformed));
+        render_context_->set_pixel_shader(shader_manager_->get_pixel_shader(PixelShaderId::ui));
+        render_context_->set_vertex_buffer(vr_mirror_vertex_buffer_, sizeof(GpuTransformedVertex));
+        render_context_->set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        render_context_->set_cull_mode(D3D11_CULL_NONE);
+        render_context_->set_blend_state(
+            state_manager_->lookup_blend_state(rf::gr::ALPHA_BLEND_NONE));
+        render_context_->set_depth_stencil_state(
+            state_manager_->lookup_depth_stencil_state(rf::gr::ZBUFFER_TYPE_NONE));
+        auto* sampler = state_manager_->lookup_sampler_state(rf::gr::TEXTURE_SOURCE_CLAMP, 0);
+        render_context_->set_sampler_states({sampler, sampler});
+        context_->PSSetShaderResources(0, 1, &source_view);
+        context_->Draw(4, 0);
+
+        ID3D11ShaderResourceView* null_view = nullptr;
+        context_->PSSetShaderResources(0, 1, &null_view);
+        render_context_->set_textures(-1, -1);
+        if (!vr_mirror_logged_) {
+            vr_mirror_logged_ = true;
+            xlog::info("[AFVR] Desktop mirror is sampling the right OpenXR eye");
+        }
+    }
+
     void Renderer::set_far_clip(bool enabled)
     {
         render_context_->set_depth_clip_enabled(enabled);
@@ -902,14 +1097,35 @@ namespace gr::d3d11
         entity_shadow_renderer_->generate_shadow_map(context_, *render_context_, rf::gr::eye_pos);
 
         // Restore render target and viewport after shadow pass
-        // Use the current render target (may be a security camera/mirror texture, not the backbuffer)
-        ID3D11RenderTargetView* current_rtv = default_render_target_view_;
-        if (render_target_bm_handle_ != -1) {
+        // Use the active OpenXR eye when present. The old desktop-only restore
+        // redirected every Alpine world draw away from the acquired eye image,
+        // leaving the compositor with only the eye clear color.
+        ID3D11RenderTargetView* current_rtv = vr_eye_render_target_view_;
+        ID3D11DepthStencilView* current_dsv = vr_eye_depth_stencil_view_;
+        if (!current_rtv) {
+            current_rtv = default_render_target_view_;
+            current_dsv = depth_stencil_view_;
+        }
+        if (!vr_eye_render_target_view_ && render_target_bm_handle_ != -1) {
             ID3D11RenderTargetView* rt = texture_manager_->lookup_render_target(render_target_bm_handle_);
             if (rt) current_rtv = rt;
         }
-        render_context_->set_render_target(current_rtv, depth_stencil_view_);
-        render_context_->set_clip();
+        render_context_->set_render_target(current_rtv, current_dsv);
+        if (vr_eye_render_target_view_) {
+            D3D11_VIEWPORT viewport{};
+            viewport.Width = static_cast<float>(vr_eye_width_);
+            viewport.Height = static_cast<float>(vr_eye_height_);
+            viewport.MaxDepth = 1.0f;
+            context_->RSSetViewports(1, &viewport);
+            static bool vr_shadow_restore_logged = false;
+            if (!vr_shadow_restore_logged) {
+                vr_shadow_restore_logged = true;
+                xlog::info("[AFVR] Alpine shadow pass restored the active eye render target and viewport");
+            }
+        }
+        else {
+            render_context_->set_clip();
+        }
         render_context_->set_cull_mode(D3D11_CULL_BACK);
 
         // Bind shadow resources for the scene pixel shader

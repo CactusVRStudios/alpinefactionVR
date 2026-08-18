@@ -85,6 +85,9 @@ void PatchedAppLauncher::launch()
     setup_startup_info(si);
 
     std::string cmd_line = build_cmd_line(app_path);
+    if (m_patch_dll_name == "AlpineFaction.dll") {
+        xlog::info("[AFVR] Effective Red Faction command line: {}", cmd_line);
+    }
 
     xlog::info("Starting the process: {}", app_path);
     try {

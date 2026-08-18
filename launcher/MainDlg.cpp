@@ -44,8 +44,8 @@ BOOL MainDlg::OnInitDialog()
     std::string username = game_config.fflink_username.value();
 
     // Determine window title
-    std::string window_title = username.empty() ? "Alpine Faction Launcher - Not Linked to a FactionFiles Account"
-                                                : "Alpine Faction Launcher - Linked to FactionFiles as " + username;
+    std::string window_title = username.empty() ? "Alpine Faction VR Edition Launcher - Not Linked to a FactionFiles Account"
+                                                : "Alpine Faction VR Edition Launcher - Linked to FactionFiles as " + username;
 
     // Set window title
     SetWindowText(window_title.c_str());
@@ -117,7 +117,7 @@ BOOL MainDlg::OnInitDialog()
     m_tool_tip.Create(*this);
     m_tool_tip.AddTool(m_mod_selector, "To find more mods, visit FactionFiles.com");
     m_tool_tip.AddTool(m_options_button, "Adjust settings");
-    m_tool_tip.AddTool(m_play_button, "Launch Alpine Faction");
+    m_tool_tip.AddTool(m_play_button, "Launch Alpine Faction VR Edition");
     m_tool_tip.AddTool(m_sm1_button, "Open the Alpine Faction level editor");
     m_tool_tip.AddTool(m_sb2_button, "Join the active Red Faction Community Discord");
     m_tool_tip.AddTool(m_sb3_button, "Visit FactionFiles.com to find community-made mods and levels");
@@ -515,10 +515,10 @@ void MainDlg::OnBnClickedOptionsBtn()
 
             if (username.empty()) {
                 m_fflink_button.ShowWindow(SW_SHOW);
-                SetWindowText("Alpine Faction Launcher - Not Linked to a FactionFiles Account");
+                SetWindowText("Alpine Faction VR Edition Launcher - Not Linked to a FactionFiles Account");
             } else {
                 m_fflink_button.ShowWindow(SW_HIDE);
-                std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + username;
+                std::string window_title = "Alpine Faction VR Edition Launcher - Linked to FactionFiles as " + username;
                 SetWindowText(window_title.c_str());
             }
         }
@@ -749,7 +749,7 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
         config.save();
 
         // Update window title
-        std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
+        std::string window_title = "Alpine Faction VR Edition Launcher - Linked to FactionFiles as " + m_fflink_result_username;
         SetWindowText(window_title.c_str());
 
         // Hide the FFLink button since account is now linked

@@ -14,6 +14,7 @@
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/misc.h"
+#include "../vr/vr.h"
 #include "hud_internal.h"
 
 float g_hud_ammo_scale = 1.0f;
@@ -45,6 +46,9 @@ CallHook<void(int, int, int, rf::gr::Mode)> render_reticle_gr_bitmap_hook{
         0x0043A4FE,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        if (afvr::is_session_running() && !rf::is_multi) {
+            return;
+        }
         float base_scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
         float scale = base_scale * g_alpine_game_config.get_reticle_scale();
         int clip_w = rf::gr::clip_width();

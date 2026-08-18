@@ -68,6 +68,7 @@ void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();
 void hud_weapons_set_big(bool is_big);
 void weapon_select_apply_patches();
+void weapon_select_render();
 void weapon_select_set_big(bool is_big);
 void multi_hud_chat_apply_patches();
 void multi_hud_chat_set_big(bool is_big);

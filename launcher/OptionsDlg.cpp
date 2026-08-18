@@ -15,7 +15,8 @@ OptionsDlg::OptionsDlg() :
     CDialog(IDD_OPTIONS),
     m_display_dlg(m_conf),
     m_misc_dlg(m_conf),
-    m_multiplayer_dlg(m_conf)
+    m_multiplayer_dlg(m_conf),
+    m_vr_dlg(m_conf, m_display_dlg)
 {
 }
 
@@ -34,6 +35,7 @@ BOOL OptionsDlg::OnInitDialog()
     InitNestedDialog(m_display_dlg, IDC_DISPLAY_OPTIONS_BOX);
     InitNestedDialog(m_misc_dlg, IDC_MISC_OPTIONS_BOX);
     InitNestedDialog(m_multiplayer_dlg, IDC_MULTIPLAYER_OPTIONS_BOX);
+    InitNestedDialog(m_vr_dlg, IDC_VR_OPTIONS_BOX);
 
     // Update FactionFiles link status
     UpdateFFLinkStatus();
@@ -84,6 +86,7 @@ void OptionsDlg::OnBnClickedOk()
     m_display_dlg.OnSave();
     m_multiplayer_dlg.OnSave();
     m_misc_dlg.OnSave();
+    m_vr_dlg.OnSave();
 
     try {
         m_conf.save();
@@ -231,7 +234,7 @@ void OptionsDlg::OnBnClickedFFLinkAction()
             // Update main window title
             HWND mainWindow = GetParent();
             if (mainWindow) {
-                ::SetWindowTextA(mainWindow, "Alpine Faction Launcher - Not Linked to a FactionFiles Account");
+                ::SetWindowTextA(mainWindow, "Alpine Faction VR Edition Launcher - Not Linked to a FactionFiles Account");
             }
 
             MessageBoxA("Your FactionFiles account has been unlinked.", "Account Unlinked", MB_OK | MB_ICONINFORMATION);
@@ -260,7 +263,7 @@ LRESULT OptionsDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     // Update main window title
     HWND mainWindow = GetParent();
     if (mainWindow) {
-        std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
+        std::string window_title = "Alpine Faction VR Edition Launcher - Linked to FactionFiles as " + m_fflink_result_username;
         ::SetWindowTextA(mainWindow, window_title.c_str());
     }
 

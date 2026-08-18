@@ -15,6 +15,7 @@
 #include "../../rf/v3d.h"
 #include "../../rf/vmesh.h"
 #include "../../rf/character.h"
+#include "../../vr/vr.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/alpine_options.h"
@@ -1024,6 +1025,9 @@ namespace gr::d3d11
             // This information may be useful for simplifying shaders
             render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
             int texture = tex_handles[b.texture_index];
+            if (!afvr::should_render_fpgun_texture(texture)) {
+                continue;
+            }
 
             // Self-illumination from material emissive_factor (set at cache build time),
             // or force fullbright for COLOR_SOURCE_TEXTURE batches (no vertex color influence).
@@ -1056,12 +1060,18 @@ namespace gr::d3d11
             render_context_.set_mode(powerup_mode);
             render_context_.set_textures(params.powerup_bitmaps[0], -1);
             for (auto& b : batches) {
+                if (!afvr::should_render_fpgun_texture(tex_handles[b.texture_index])) {
+                    continue;
+                }
                 render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
                 render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
             }
             if (params.powerup_bitmaps[1] != -1) {
                 render_context_.set_textures(params.powerup_bitmaps[1], -1);
                 for (auto& b : batches) {
+                    if (!afvr::should_render_fpgun_texture(tex_handles[b.texture_index])) {
+                        continue;
+                    }
                     render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
                     render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
                 }

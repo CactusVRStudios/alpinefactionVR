@@ -10,6 +10,7 @@
 #include "OptionsDisplayDlg.h"
 #include "OptionsMiscDlg.h"
 #include "OptionsMultiplayerDlg.h"
+#include "OptionsVrDlg.h"
 
 class OptionsDlg : public CDialog
 {
@@ -38,6 +39,7 @@ private:
     OptionsDisplayDlg m_display_dlg;
     OptionsMiscDlg m_misc_dlg;
     OptionsMultiplayerDlg m_multiplayer_dlg;
+    OptionsVrDlg m_vr_dlg;
 
     // FactionFiles Link
     std::string m_fflink_token;

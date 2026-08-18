@@ -16,6 +16,7 @@
 #define IDD_OPTIONS_MULTIPLAYER         109
 // #define IDD_OPTIONS_INPUT               110
 // #define IDD_OPTIONS_INTERFACE           111
+#define IDD_OPTIONS_VR                  112
 #define IDC_PLAY_BTN                    999
 #define IDC_EDITOR_BTN                  1000
 #define IDC_OPTIONS_BTN                 1001
@@ -96,6 +97,11 @@
 #define IDC_FFLINK_OPTIONS_BOX          3060
 #define IDC_FFLINK_STATUS_LABEL         3061
 #define IDC_FFLINK_ACTION_BTN           3062
+#define IDC_ENABLE_VR_CHECK             3090
+#define IDC_VR_OPTIONS_BOX              3091
+#define IDC_VR_TURN_MODE_COMBO          3092
+#define IDC_VR_SNAP_ANGLE_EDIT          3093
+#define IDC_VR_SMOOTH_SPEED_EDIT        3094
 
 // Image buttons
 #define IDB_PLAY_NORMAL                 3001
@@ -176,9 +182,9 @@
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        112
+#define _APS_NEXT_RESOURCE_VALUE        113
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1059
+#define _APS_NEXT_CONTROL_VALUE         3096
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

@@ -8,12 +8,16 @@
 #include "../rf/weapon.h"
 #include "../rf/localize.h"
 #include "../rf/sound/sound.h"
+#include "../vr/vr.h"
 #include <patch_common/FunHook.h>
 
 bool weapon_select_big_mode = false;
 
 void weapon_select_render()
 {
+    if (afvr::is_rendering_weapon()) {
+        return;
+    }
     if (!rf::local_player) {
         return;
     }

@@ -255,3 +255,13 @@ void OptionsDisplayDlg::OnWindowModeChange()
 {
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
 }
+
+void OptionsDisplayDlg::SetVrEnabled(bool enabled)
+{
+    if (enabled) {
+        m_conf.renderer = GameConfig::Renderer::d3d11;
+        m_renderer_combo.SetCurSel(static_cast<int>(GameConfig::Renderer::d3d11));
+        OnRendererChange();
+    }
+    m_renderer_combo.EnableWindow(!enabled);
+}

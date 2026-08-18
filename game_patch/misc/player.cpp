@@ -35,6 +35,7 @@
 #include "../multi/alpine_packets.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud_world.h"
+#include "../vr/vr.h"
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include <common/config/GameConfig.h>
@@ -42,6 +43,8 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
+#include <xlog/xlog.h>
+#include <array>
 
 static rf::PlayerHeadlampSettings g_local_headlamp_settings;
 
@@ -385,6 +388,114 @@ FunHook<void(rf::Player*, bool, bool)> player_fire_primary_weapon_hook{
         player_fire_primary_weapon_hook.call_target(player, alt_fire, was_pressed);
     },
 };
+
+// player_fire_primary_weapon only handles the input transition. Automatic weapons
+// continue firing through entity_fire_weapon on later simulation ticks, after the
+// input hook has returned. Apply the VR pose at the shared firing seam so every
+// local singleplayer shot uses the tracked muzzle, including sustained fire.
+FunHook<void(rf::Entity*, int, int, int, int, int)> entity_fire_weapon_hook{
+    0x00425830,
+    [](rf::Entity* entity, int arg2, int arg3, int arg4, int arg5, int arg6) {
+        const bool is_local_vr_fire =
+            entity && rf::local_player && !rf::is_multi && afvr::is_session_running() &&
+            entity->handle == rf::local_player->entity_handle;
+
+        rf::Vector3 saved_eye_position{};
+        rf::Matrix3 saved_eye_orientation{};
+        rf::Vector3 vr_muzzle_position{};
+        rf::Matrix3 vr_aim_orientation{};
+        bool use_vr_aim = false;
+
+        float saved_shake_max_amplitude = 0.0f;
+        float saved_shake_duration = 0.0f;
+        rf::Timestamp saved_shake_timestamp{};
+
+        if (is_local_vr_fire) {
+            saved_shake_max_amplitude = entity->control_data.shake_max_amplitude;
+            saved_shake_duration = entity->control_data.shake_duration;
+            saved_shake_timestamp = entity->control_data.shake_timestamp;
+
+            if (afvr::get_weapon_muzzle_pose(vr_muzzle_position, vr_aim_orientation)) {
+                saved_eye_position = entity->eye_pos;
+                saved_eye_orientation = entity->eye_orient;
+                entity->eye_pos = vr_muzzle_position;
+                entity->eye_orient = vr_aim_orientation;
+                use_vr_aim = true;
+            }
+        }
+
+        entity_fire_weapon_hook.call_target(entity, arg2, arg3, arg4, arg5, arg6);
+
+        if (use_vr_aim) {
+            entity->eye_pos = saved_eye_position;
+            entity->eye_orient = saved_eye_orientation;
+        }
+        if (is_local_vr_fire) {
+            // Restore the pre-shot shake state. This removes weapon recoil shake
+            // without suppressing an explosion or scripted shake already in progress.
+            entity->control_data.shake_max_amplitude = saved_shake_max_amplitude;
+            entity->control_data.shake_duration = saved_shake_duration;
+            entity->control_data.shake_timestamp = saved_shake_timestamp;
+
+            static bool vr_fire_logged = false;
+            if (!vr_fire_logged) {
+                vr_fire_logged = true;
+                xlog::info("[AFVR] Every local singleplayer shot uses tracked VR aim; weapon camera shake is suppressed");
+            }
+        }
+    },
+};
+
+bool is_vr_head_aimed_launch_weapon(int weapon_type)
+{
+    // Only actual throwables retain head-directed launches. The flamethrower
+    // is a supported two-hand gun and must follow the solved weapon barrel.
+    return weapon_type == rf::grenade_weapon_type ||
+        weapon_type == rf::remote_charge_weapon_type;
+}
+
+// Projectile weapons can replace the eye transform prepared by entity_fire_weapon
+// with an authored body/muzzle tag before reaching this factory. Override every
+// local SP projectile at the final creation seam. Grenades and remote charges
+// deliberately retain their six-degree HMD direction; guns, including the
+// flamethrower, follow the solved one/two-hand weapon pose.
+FunHook<rf::Weapon*(int, int, const rf::Vector3&, const rf::Matrix3&, int, int)>
+    weapon_create_hook{
+        0x004C77A0,
+        [](int weapon_type, int parent_handle, const rf::Vector3& position,
+            const rf::Matrix3& orientation, int arg5, int arg6) {
+            if (!rf::is_multi && rf::local_player && afvr::is_session_running() &&
+                parent_handle == rf::local_player->entity_handle) {
+                rf::Vector3 muzzle_position{};
+                rf::Matrix3 controller_orientation{};
+                if (afvr::get_weapon_muzzle_pose(
+                        muzzle_position, controller_orientation)) {
+                    rf::Vector3 head_position{};
+                    rf::Matrix3 head_orientation{};
+                    const bool use_head_aim =
+                        is_vr_head_aimed_launch_weapon(weapon_type) &&
+                        afvr::get_head_pose(head_position, head_orientation);
+                    const rf::Matrix3& launch_orientation = use_head_aim
+                        ? head_orientation : controller_orientation;
+
+                    static std::array<bool, 64> launch_override_logged{};
+                    if (weapon_type >= 0 &&
+                        weapon_type < static_cast<int>(launch_override_logged.size()) &&
+                        !launch_override_logged[weapon_type]) {
+                        launch_override_logged[weapon_type] = true;
+                        xlog::info(
+                            "[AFVR] Weapon {} launch uses calibrated muzzle origin and {} direction",
+                            weapon_type, use_head_aim ? "six-degree HMD" : "tracked weapon");
+                    }
+                    return weapon_create_hook.call_target(
+                        weapon_type, parent_handle, muzzle_position,
+                        launch_orientation, arg5, arg6);
+                }
+            }
+            return weapon_create_hook.call_target(
+                weapon_type, parent_handle, position, orientation, arg5, arg6);
+        },
+    };
 
 CodeInjection stop_continous_primary_fire_patch{
     0x00430EC5,
@@ -990,6 +1101,8 @@ void player_do_patch()
 
     // Allow swapping Assault Rifle primary and alternate fire controls
     player_fire_primary_weapon_hook.install();
+    entity_fire_weapon_hook.install();
+    weapon_create_hook.install();
     stop_continous_primary_fire_patch.install();
     stop_continous_alternate_fire_patch.install();
 

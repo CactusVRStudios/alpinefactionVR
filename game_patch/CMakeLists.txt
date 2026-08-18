@@ -320,8 +320,19 @@ set(SRCS
     purefaction/pf.cpp
     purefaction/pf.h
     purefaction/pf_packets.h
+    vr/vr.cpp
+    vr/vr.h
+    vr/vr_render_bridge.cpp
+    vr/vr_render_bridge.h
     ${EXPERIMENTAL_SRCS}
 )
+
+if(AF_ENABLE_OPENXR)
+    list(APPEND SRCS
+        vr/openxr_context.cpp
+        vr/openxr_context.h
+    )
+endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 
@@ -351,6 +362,15 @@ if(NOT MSVC)
 endif()
 
 target_compile_definitions(AlpineFaction PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX BUILD_DLL)
+
+if(AF_ENABLE_OPENXR)
+    target_compile_definitions(AlpineFaction PRIVATE
+        AF_ENABLE_OPENXR=1
+        XR_USE_PLATFORM_WIN32
+        XR_USE_GRAPHICS_API_D3D11
+    )
+    target_link_libraries(AlpineFaction OpenXR::openxr_loader)
+endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experimental/experimental.cpp")
     target_compile_definitions(AlpineFaction PRIVATE HAS_EXPERIMENTAL)

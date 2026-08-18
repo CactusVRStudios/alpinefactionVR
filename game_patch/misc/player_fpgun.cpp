@@ -16,6 +16,7 @@
 #include "../graphics/gr.h"
 #include "../main/main.h"
 #include "../os/console.h"
+#include "../vr/vr.h"
 
 static std::vector<int> g_fpgun_sounds;
 static rf::Player* g_fpgun_main_player = nullptr;
@@ -287,6 +288,11 @@ CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> player_fpgun_rende
     [](rf::Matrix3& viewer_orient, rf::Vector3& viewer_pos, float horizontal_fov, bool zbuffer_flag, bool z_scale) {
         // Flush VFX mesh outlines so they don't render on top of fpguns.
         gr_flush_outlines_before_fpgun();
+        if (afvr::is_rendering_weapon()) {
+            // Preserve the active eye's asymmetric OpenXR projection. The
+            // tracked weapon is rendered at world scale.
+            return;
+        }
         horizontal_fov *= g_alpine_game_config.fpgun_fov_scale;
         horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
         player_fpgun_render_gr_setup_3d_hook

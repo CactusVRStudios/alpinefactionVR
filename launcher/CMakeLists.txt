@@ -29,6 +29,8 @@ set(SRCS
     OptionsMiscDlg.h
     OptionsMultiplayerDlg.cpp
     OptionsMultiplayerDlg.h
+    OptionsVrDlg.cpp
+    OptionsVrDlg.h
     res
     resource.h
     stdafx.cpp

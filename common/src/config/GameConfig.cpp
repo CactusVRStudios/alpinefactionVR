@@ -163,6 +163,10 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(alpine_faction_key, "Keep Launcher Open", keep_launcher_open);
     result &= visitor(alpine_faction_key, "Language", language);
     result &= visitor(alpine_faction_key, "Reduced Speed In Background", reduced_speed_in_background);
+    result &= visitor(alpine_faction_key, "Enable VR", vr_enabled);
+    result &= visitor(alpine_faction_key, "VR Turn Mode", vr_turn_mode);
+    result &= visitor(alpine_faction_key, "VR Snap Turn Degrees", vr_snap_turn_degrees);
+    result &= visitor(alpine_faction_key, "VR Smooth Turn Degrees Per Second", vr_smooth_turn_degrees_per_second);
     result &= visitor(alpine_faction_key, "FFLink Token", fflink_token);
     result &= visitor(alpine_faction_key, "FFLink Username", fflink_username);
     result &= visitor(alpine_faction_key, "AF Stats PSK", afstats_psk);
@@ -186,4 +190,11 @@ bool is_valid_enum_value<GameConfig::Renderer>(int value)
     return value == static_cast<int>(GameConfig::Renderer::d3d8)
         || value == static_cast<int>(GameConfig::Renderer::d3d9)
         || value == static_cast<int>(GameConfig::Renderer::d3d11);
+}
+
+template<>
+bool is_valid_enum_value<GameConfig::VrTurnMode>(int value)
+{
+    return value == static_cast<int>(GameConfig::VrTurnMode::snap)
+        || value == static_cast<int>(GameConfig::VrTurnMode::smooth);
 }

@@ -2,6 +2,7 @@
 
 #include <source_location>
 #include <concepts>
+#include <optional>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include <common/DynamicLinkLibrary.h>
@@ -92,6 +93,19 @@ namespace gr::d3d11
         uint32_t get_sample_count() const;
         void flush_frame_buffers();
         bool supports_exclusive_fullscreen() const;
+        [[nodiscard]] ID3D11Device* device() const { return device_; }
+        [[nodiscard]] ID3D11DeviceContext* device_context() const { return context_; }
+        void begin_vr_eye(ID3D11RenderTargetView* render_target_view,
+            ID3D11DepthStencilView* depth_stencil_view, int width, int height,
+            const Projection& projection);
+        void finish_vr_eye();
+        void begin_vr_hud(ID3D11RenderTargetView* render_target_view,
+            int width, int height);
+        void finish_vr_hud();
+        void mirror_vr_eye(ID3D11ShaderResourceView* source_view,
+            int source_width, int source_height);
+        void end_vr_frame();
+        [[nodiscard]] bool copy_presented_target(ID3D11Texture2D* destination);
 
     private:
         void init_device();
@@ -131,7 +145,31 @@ namespace gr::d3d11
         bool frame_latency_stall_logged_ = false;
         HANDLE frame_latency_wait_handle_ = nullptr;
         UINT swap_chain_flags_ = 0;
+        std::optional<Projection> vr_saved_projection_;
+        ID3D11RenderTargetView* vr_eye_render_target_view_ = nullptr;
+        ID3D11DepthStencilView* vr_eye_depth_stencil_view_ = nullptr;
+        int vr_eye_width_ = 0;
+        int vr_eye_height_ = 0;
+        ComPtr<ID3D11Buffer> vr_mirror_vertex_buffer_;
+        bool vr_mirror_logged_ = false;
+        bool vr_present_vsync_disabled_logged_ = false;
     };
+
+    // Non-owning access for OpenXR. The VR path always uses Alpine's existing
+    // D3D11 device and never creates a second graphics device.
+    [[nodiscard]] ID3D11Device* get_renderer_device();
+    [[nodiscard]] ID3D11DeviceContext* get_renderer_device_context();
+    void begin_renderer_vr_eye(ID3D11RenderTargetView* render_target_view,
+        ID3D11DepthStencilView* depth_stencil_view, int width, int height,
+        const Projection& projection);
+    void finish_renderer_vr_eye();
+    void begin_renderer_vr_hud(ID3D11RenderTargetView* render_target_view,
+        int width, int height);
+    void finish_renderer_vr_hud();
+    void mirror_renderer_vr_eye(ID3D11ShaderResourceView* source_view,
+        int source_width, int source_height);
+    void end_renderer_vr_frame();
+    [[nodiscard]] bool copy_renderer_presented_target(ID3D11Texture2D* destination);
 
     void init_error(ID3D11Device* device);
     void fatal_gr_error(

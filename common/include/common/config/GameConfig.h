@@ -76,6 +76,19 @@ struct GameConfig
     CfgVar<bool> keep_launcher_open = true;
     CfgVar<bool> reduced_speed_in_background = false;
 
+    // VR / OpenXR (singleplayer only)
+    CfgVar<bool> vr_enabled = true;
+    enum class VrTurnMode
+    {
+        snap = 0,
+        smooth = 1,
+    };
+    CfgVar<VrTurnMode> vr_turn_mode = VrTurnMode::snap;
+    CfgVar<unsigned> vr_snap_turn_degrees{
+        60, [](auto val) { return std::clamp(val, 15u, 180u); }};
+    CfgVar<unsigned> vr_smooth_turn_degrees_per_second{
+        120, [](auto val) { return std::clamp(val, 30u, 360u); }};
+
     // Internal
     CfgVar<std::string> alpine_faction_version{""};
     CfgVar<std::string> fflink_token{""};

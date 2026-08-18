@@ -9,6 +9,7 @@
 #include <launcher_common/PatchedAppLauncher.h>
 #include <launcher_common/VideoDeviceInfoProvider.h>
 #include <xlog/xlog.h>
+#include <algorithm>
 #include <thread>
 
 #ifdef _DEBUG
@@ -147,7 +148,7 @@ int LauncherApp::Run()
             "-editor      Starts level editor immediately\n"
             "-exe-path     Override patched executable file location\n"
             "args...      Additional arguments passed to game or editor\n",
-            "Alpine Faction Launcher Help", MB_OK | MB_ICONINFORMATION);
+            "Alpine Faction VR Edition Launcher Help", MB_OK | MB_ICONINFORMATION);
         return 0;
     }
 
@@ -287,7 +288,32 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
     if (mod_name) {
         launcher.set_mod(mod_name);
     }
-    launcher.set_args(m_cmd_line_info.GetPassThroughArgs());
+    std::vector<std::string> game_args = m_cmd_line_info.GetPassThroughArgs();
+    GameConfig config;
+    config.load();
+    const bool command_line_vr =
+        std::ranges::find(game_args, "-vr") != game_args.end();
+    const bool vr_enabled = config.vr_enabled || command_line_vr;
+    if (vr_enabled) {
+        if (std::ranges::find(game_args, "-dedicated") != game_args.end()) {
+            Message(hwnd,
+                "VR mode supports the Red Faction singleplayer campaign only and cannot be used with -dedicated.",
+                "Alpine Faction VR Edition", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        if (!command_line_vr) {
+            game_args.emplace_back("-vr");
+        }
+        if (config.renderer != GameConfig::Renderer::d3d11) {
+            config.renderer = GameConfig::Renderer::d3d11;
+            config.save();
+        }
+        xlog::info("[AFVR] Launcher VR activation: enabled; forcing Direct3D 11");
+    }
+    else {
+        xlog::info("[AFVR] Launcher VR activation: disabled");
+    }
+    launcher.set_args(game_args);
 
     try {
         xlog::info("Checking installation");
@@ -345,7 +371,7 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
         Message(hwnd,
             "Privilege elevation is required. Please change RF.exe file properties and disable all "
             "compatibility settings (Run as administrator, Compatibility mode for Windows XX, etc.) or run "
-            "the Alpine Faction Launcher as administrator.",
+            "the Alpine Faction VR Edition Launcher as administrator.",
             nullptr, MB_OK | MB_ICONERROR);
     }
     catch (FileNotFoundException&) {

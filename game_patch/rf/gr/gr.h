@@ -388,6 +388,8 @@ namespace rf::gr
     static auto& read_backbuffer = addr_as_ref<int(int x, int y, int w, int h, void* buffer)>(0x0050DFF0);
     static auto& clear = addr_as_ref<void()>(0x0050CDF0);
     static auto& cull_sphere = addr_as_ref<bool(const Vector3& pos, float radius)>(0x005186A0);
+    static auto& setup_3d = addr_as_ref<void(Matrix3& viewer_orient, Vector3& viewer_pos,
+        float horizontal_fov, bool zbuffer_flag, bool z_scale)>(0x00517EB0);
     static auto& set_texture_mip_filter = addr_as_ref<void(bool linear)>(0x0050E830);
     static auto& lock = addr_as_ref<bool(int bm_handle, int section, LockInfo* lock, LockMode mode)>(0x0050E2E0);
     static auto& unlock = addr_as_ref<void(LockInfo* lock)>(0x0050E310);

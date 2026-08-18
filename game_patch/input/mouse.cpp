@@ -14,6 +14,7 @@
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "../hud/multi_spectate.h"
+#include "../vr/vr.h"
 #include "mouse.h"
 #include "../multi/multi.h"
 #include "input.h"
@@ -166,6 +167,13 @@ FunHook<void()> mouse_eval_deltas_hook{
         // disable mouse when window is not active
         if (rf::os_foreground() || g_alpine_game_config.background_mouse) {
             mouse_eval_deltas_hook.call_target();
+            if (afvr::should_block_physical_mouse_input()) {
+                // Keep polling releases, but do not let physical mouse motion
+                // steer VR gameplay or an in-game menu.
+                rf::mouse_delta_x = 0;
+                rf::mouse_delta_y = 0;
+                rf::mouse_delta_z = 0;
+            }
         }
     },
 };

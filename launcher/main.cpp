@@ -18,7 +18,7 @@ void InitLogging()
         .add_appender<xlog::FileAppender>(log_file_path.GetString(), false)
         .add_appender<xlog::ConsoleAppender>()
         .add_appender<xlog::Win32Appender>();
-    xlog::info("Alpine Faction Launcher {} ({}), {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__);
+    xlog::info("Alpine Faction VR Edition Launcher {} ({}), {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__);
 }
 
 void InitCrashHandler()

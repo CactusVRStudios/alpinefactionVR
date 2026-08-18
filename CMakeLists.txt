@@ -2,6 +2,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(AlpineFaction)
 
+option(AF_ENABLE_OPENXR "Build AlpineFaction VR OpenXR support" OFF)
+
 if(NOT "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
     message(FATAL_ERROR "Only x86 (32-bit) platforms are supported!")
 endif()
@@ -89,6 +91,36 @@ endif()
 add_subdirectory(launcher_common)
 add_subdirectory(launcher)
 add_subdirectory(common)
+
+if(AF_ENABLE_OPENXR)
+    if(CMAKE_VERSION VERSION_LESS 3.16)
+        message(FATAL_ERROR "AF_ENABLE_OPENXR requires CMake 3.16 or newer")
+    endif()
+
+    include(FetchContent)
+    set(BUILD_LOADER ON CACHE BOOL "" FORCE)
+    set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SDK_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_ALL_EXTENSIONS OFF CACHE BOOL "" FORCE)
+    set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
+
+    # Official Khronos loader, pinned to OpenXR SDK release-1.1.60.
+    FetchContent_Declare(
+        openxr_sdk
+        URL https://github.com/KhronosGroup/OpenXR-SDK/archive/64f2b37c8c6da3d83c9b4d11865ba1fb752cb8ec.zip
+        URL_HASH SHA256=2f1b95799d0d70c8cfc7d1a477804f083b9ad90802aaf8e86abe357627bf19e5
+        DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+    )
+    FetchContent_MakeAvailable(openxr_sdk)
+
+    if(MSVC)
+        set_property(TARGET openxr_loader PROPERTY
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endif()
+
 add_subdirectory(game_patch)
 add_subdirectory(editor_patch)
 add_subdirectory(patch_common)

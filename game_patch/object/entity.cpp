@@ -24,10 +24,60 @@
 #include "../rf/character.h"
 #include "../rf/math/vector.h"
 #include "../rf/gameseq.h"
+#include "../vr/vr.h"
 #include "../multi/multi.h"
 #include "../multi/server.h"
 
 rf::Timestamp g_player_jump_timestamp;
+
+namespace
+{
+    bool g_ejecting_local_vr_shell = false;
+
+    FunHook<void(rf::Entity*)> entity_eject_shell_vr_hook{
+        0x0042A1D0,
+        [](rf::Entity* entity) {
+            const bool saved = g_ejecting_local_vr_shell;
+            g_ejecting_local_vr_shell =
+                afvr::is_session_running() && !rf::is_multi && entity &&
+                rf::local_player &&
+                entity->local_player == rf::local_player;
+            entity_eject_shell_vr_hook.call_target(entity);
+            g_ejecting_local_vr_shell = saved;
+        },
+    };
+
+    CallHook<rf::Debris*(int, const char*, float, rf::DebrisCreateStruct*, int, float)>
+        entity_eject_shell_debris_create_vr_hook{
+            0x0042A547,
+            [](int parent_handle, const char* vmesh_filename, float mass,
+                rf::DebrisCreateStruct* debris_info, int mesh_num,
+                float collision_radius) {
+                if (g_ejecting_local_vr_shell && debris_info) {
+                    rf::Vector3 controller_position{};
+                    rf::Matrix3 controller_orientation{};
+                    if (afvr::get_right_controller_pose(
+                            controller_position, controller_orientation)) {
+                        constexpr float up_offset = 0.10f;
+                        constexpr float forward_offset = 0.17f;
+                        debris_info->pos = controller_position +
+                            controller_orientation.uvec * up_offset +
+                            controller_orientation.fvec * forward_offset;
+                        static bool shell_origin_logged = false;
+                        if (!shell_origin_logged) {
+                            shell_origin_logged = true;
+                            xlog::info(
+                                "[AFVR] Local shell ejection follows the right controller; offset Y +{:.2f}, Z +{:.2f}",
+                                up_offset, forward_offset);
+                        }
+                    }
+                }
+                return entity_eject_shell_debris_create_vr_hook.call_target(
+                    parent_handle, vmesh_filename, mass, debris_info,
+                    mesh_num, collision_radius);
+            },
+        };
+}
 
 CodeInjection stuck_to_ground_when_jumping_fix{
     0x0042891E,
@@ -712,6 +762,8 @@ void entity_do_patch()
     // Use local_player variable for weapon shell distance calculation instead of local_player_entity
     // in entity_eject_shell. Fixed debris pool being exhausted when local player is dead.
     AsmWriter(0x0042A223, 0x0042A232).mov(asm_regs::ecx, {&rf::local_player});
+    entity_eject_shell_vr_hook.install();
+    entity_eject_shell_debris_create_vr_hook.install();
 
     // Fix move sound not being muted if entity is created hidden (example: jeep in L18S3)
     entity_process_post_hidden_injection.install();

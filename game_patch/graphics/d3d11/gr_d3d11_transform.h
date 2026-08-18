@@ -15,6 +15,8 @@ namespace gr::d3d11
     {
         float sx_ = 1.0f;
         float sy_ = 1.0f;
+        float ox_ = 0.0f;
+        float oy_ = 0.0f;
         float sz_ = -0.1f;
         float tz_ = 1.0f;
         float zf_ = 1.0f;
@@ -28,6 +30,17 @@ namespace gr::d3d11
             zf_{zf}
         {}
 
+        Projection(float tan_left, float tan_right, float tan_down, float tan_up,
+            float zn, float zf) :
+            sx_{2.0f / (tan_right - tan_left)},
+            sy_{2.0f / (tan_up - tan_down)},
+            ox_{-(tan_right + tan_left) / (tan_right - tan_left)},
+            oy_{-(tan_up + tan_down) / (tan_up - tan_down)},
+            sz_{-zn / (zf - zn)},
+            tz_{zf * zn / (zf - zn)},
+            zf_{zf}
+        {}
+
         float project_z(float z) const
         {
             return (z * sz_ + tz_) / z;
@@ -36,8 +49,8 @@ namespace gr::d3d11
         rf::Vector3 project(rf::Vector3 p) const
         {
             return {
-                p.x * sx_ / p.z,
-                p.y * sy_ / p.z,
+                p.x * sx_ / p.z + ox_,
+                p.y * sy_ / p.z + oy_,
                 project_z(p.z),
             };
         }
@@ -58,8 +71,8 @@ namespace gr::d3d11
             // To support far plane clipping change it a bit and map far plane to 0 instead of infinity
             // Matrix construction: https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
             return {{
-                {sx_, 0.0f, 0.0f, 0.0f},
-                {0.0f, sy_, 0.0f, 0.0f},
+                {sx_, 0.0f, ox_, 0.0f},
+                {0.0f, sy_, oy_, 0.0f},
                 {0.0f, 0.0f, sz_, tz_},
                 {0.0f, 0.0f, 1.0f, 0.0f},
             }};

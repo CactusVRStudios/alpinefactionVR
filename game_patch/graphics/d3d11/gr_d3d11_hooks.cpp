@@ -22,6 +22,7 @@
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/console.h"
+#include "../../vr/vr.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
@@ -190,6 +191,63 @@ namespace gr::d3d11
     }
 
     static std::optional<Renderer> renderer;
+
+    ID3D11Device* get_renderer_device()
+    {
+        return renderer ? renderer->device() : nullptr;
+    }
+
+    ID3D11DeviceContext* get_renderer_device_context()
+    {
+        return renderer ? renderer->device_context() : nullptr;
+    }
+
+    void begin_renderer_vr_eye(ID3D11RenderTargetView* render_target_view,
+        ID3D11DepthStencilView* depth_stencil_view, int width, int height,
+        const Projection& projection)
+    {
+        if (renderer) {
+            renderer->begin_vr_eye(render_target_view, depth_stencil_view,
+                width, height, projection);
+        }
+    }
+
+    void finish_renderer_vr_eye()
+    {
+        if (renderer) {
+            renderer->finish_vr_eye();
+        }
+    }
+
+    void begin_renderer_vr_hud(ID3D11RenderTargetView* render_target_view,
+        int width, int height)
+    {
+        if (renderer) {
+            renderer->begin_vr_hud(render_target_view, width, height);
+        }
+    }
+
+    void finish_renderer_vr_hud()
+    {
+        if (renderer) {
+            renderer->finish_vr_hud();
+        }
+    }
+
+    void mirror_renderer_vr_eye(ID3D11ShaderResourceView* source_view,
+        int source_width, int source_height)
+    {
+        if (renderer) {
+            renderer->mirror_vr_eye(source_view, source_width, source_height);
+        }
+    }
+
+    void end_renderer_vr_frame()
+    {
+        if (renderer) {
+            renderer->end_vr_frame();
+        }
+    }
 
     void update_window_mode();
 
@@ -360,11 +418,13 @@ namespace gr::d3d11
 
     void render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
+        afvr::note_static_solid_draw();
         renderer->render_solid(solid, rooms, num_rooms);
     }
 
     void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
     {
+        afvr::note_movable_solid_draw();
         // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
         // using the mover's own GSolid (not level.geometry). Static lights are already
         // baked into the mover's lightmap, so we must not add them as point lights.
@@ -490,6 +550,7 @@ namespace gr::d3d11
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
     {
+        afvr::note_standard_mesh_draw();
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
             bool lights_gathered = false;
             if (rf::level.geometry && !skip_mesh_light_gather) {
@@ -554,6 +615,7 @@ namespace gr::d3d11
 
     void render_character_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, int lod_index, const rf::MeshRenderParams& params)
     {
+        afvr::note_character_mesh_draw();
         bool use_vertex_lighting = level_uses_vertex_lighting();
 
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
@@ -659,6 +721,11 @@ namespace gr::d3d11
     bool set_render_target(int bm_handle)
     {
         return renderer->set_render_target(bm_handle);
+    }
+
+    bool copy_renderer_presented_target(ID3D11Texture2D* destination)
+    {
+        return renderer && renderer->copy_presented_target(destination);
     }
 
     void flush_outlines_before_fpgun()

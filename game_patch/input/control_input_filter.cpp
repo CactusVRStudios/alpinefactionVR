@@ -19,6 +19,9 @@ std::size_t g_veto_count = 0;
 std::array<ControlInputInjectionFn, max_participants> g_injections{};
 std::size_t g_injection_count = 0;
 
+std::array<ControlInputDownInjectionFn, max_participants> g_down_injections{};
+std::size_t g_down_injection_count = 0;
+
 // Vetoes are OR-ed, so their registration order does not matter.
 bool action_is_vetoed(rf::ControlConfig* ccp, rf::ControlConfigAction action)
 {
@@ -39,6 +42,16 @@ ControlInputInjection resolve_injection(rf::ControlConfig* ccp, rf::ControlConfi
         result.just_pressed = result.just_pressed || injected.just_pressed;
     }
     return result;
+}
+
+bool resolve_down_injection(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    for (std::size_t i = 0; i < g_down_injection_count; ++i) {
+        if (g_down_injections[i](ccp, action)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
@@ -72,10 +85,8 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_do
         if (action_is_vetoed(ccp, action)) {
             return false;
         }
-        // Deliberately no injection: bots drive fire through
-        // control_config_check_pressed only, which is the one function their own
-        // hook ever covered.
-        return control_is_control_down_hook.call_target(ccp, action);
+        return control_is_control_down_hook.call_target(ccp, action) ||
+            resolve_down_injection(ccp, action);
     },
 };
 
@@ -109,6 +120,18 @@ void control_input_filter_add_press_injection(ControlInputInjectionFn injection)
         return;
     }
     g_injections[g_injection_count++] = injection;
+}
+
+void control_input_filter_add_down_injection(ControlInputDownInjectionFn injection)
+{
+    if (!injection) {
+        return;
+    }
+    if (g_down_injection_count >= g_down_injections.size()) {
+        xlog::error("control input filter: down injection registration overflow, input policy will be wrong");
+        return;
+    }
+    g_down_injections[g_down_injection_count++] = injection;
 }
 
 bool control_input_filter_check_pressed_unfiltered(

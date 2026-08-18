@@ -6,7 +6,7 @@
     processorArchitecture="x86"
     name="Goober.AlpineFactionLauncher"
     type="win32"/>
-  <description>Alpine Faction Launcher</description>
+  <description>Alpine Faction VR Edition Launcher</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

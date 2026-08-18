@@ -57,6 +57,7 @@
 #include "../rf/os/os.h"
 #include "../rf/save_restore.h"
 #include "../rf/gameseq.h"
+#include "../vr/vr.h"
 
 #ifdef HAS_EXPERIMENTAL
 #include "../experimental/experimental.h"
@@ -113,6 +114,7 @@ CodeInjection after_full_game_init_hook{
         experimental_init_after_game();
 #endif
         console_init();
+        afvr::after_game_init();
         multi_after_full_game_init();
         debug_init();
         if (!is_headless_mode()) {
@@ -130,6 +132,7 @@ CodeInjection cleanup_game_hook{
     []() {
         // Set abort flag so AWP download future exits quickly and doesn't block static destruction
         cancel_awp_download();
+        afvr::shutdown();
         debug_cleanup();
     },
 };
@@ -157,6 +160,8 @@ FunHook<int()> rf_do_frame_hook{
     []() {
         debug_do_frame_pre();
         rf::os_poll();
+        afvr::timing_game_frame_begin();
+        afvr::update();
         high_fps_update();
         server_do_frame();
         riot_shield_do_frame();
@@ -171,6 +176,7 @@ FunHook<int()> rf_do_frame_hook{
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
+        afvr::timing_game_frame_end();
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
@@ -568,6 +574,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 
     log_system_info();
     load_config();
+    afvr::register_command_line();
 
     // General game hooks
     rf_init_hook.install();
@@ -581,6 +588,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 
     // Init modules
     console_apply_patches();
+    afvr::register_console_commands();
     gr_apply_patch();
     bm_apply_patch();
     os_apply_patch();
@@ -600,6 +608,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     mouse_apply_patch();
     key_apply_patch();
     control_input_filter_apply_patch();
+    afvr::install_render_hook();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
     experimental_init();
 #endif

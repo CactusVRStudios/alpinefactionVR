@@ -13,6 +13,7 @@ class OptionsDisplayDlg : public CDialog
 public:
 	OptionsDisplayDlg(GameConfig& conf);
     void OnSave();
+    void SetVrEnabled(bool enabled);
 
 protected:
     BOOL OnInitDialog() override;
