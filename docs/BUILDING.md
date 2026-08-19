@@ -25,7 +25,7 @@ To build the AlpineFaction VR path, configure a Win32 build with:
 The enabled configuration downloads the official Khronos OpenXR SDK `release-1.1.60` source at its pinned commit and
 builds the 32-bit loader statically. `AlpineFaction.dll` therefore does not require a separately packaged
 `openxr_loader.dll`. Runtime initialization remains opt-in through `-vr`, requires D3D11, and supports the
-singleplayer campaign only.
+singleplayer campaign primarily; client multiplayer is experimental and best-effort.
 
 Linux
 -----

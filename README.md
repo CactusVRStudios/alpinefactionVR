@@ -11,7 +11,7 @@ Alpine Faction VR is a highly experimental virtual-reality implementation for th
 
 ## Current scope
 
-The project adds an optional OpenXR path to Alpine Faction's Direct3D 11 renderer, including stereoscopic rendering, headset tracking, VR-oriented camera and weapon handling, and configurable snap or smooth turning. It currently targets the **singleplayer campaign only**. Multiplayer and dedicated-server use are unsupported.
+The project adds an optional OpenXR path to Alpine Faction's Direct3D 11 renderer, including stereoscopic rendering, headset tracking, VR-oriented camera and weapon handling, and configurable snap or smooth turning. Singleplayer is the primary target. Client multiplayer is available on a best-effort, unsupported basis; dedicated-server VR is not supported.
 
 An active OpenXR runtime and a working PC VR setup are required. VR mode forces the Direct3D 11 renderer.
 
@@ -22,9 +22,59 @@ An active OpenXR runtime and a working PC VR setup are required. VR mode forces 
 3. Download the latest ZIP from this repository's [Releases](https://github.com/CactusVRStudios/alpinefactionVR/releases) page.
 4. Open the ZIP and extract the contents of the `VR Mod` folder over your installed **Alpine Faction** directory, replacing files when prompted.
 5. Start `AlpineFactionLauncher.exe`, open **Options**, enable **VR / OpenXR**, and select your preferred turn mode.
-6. Make sure your headset's OpenXR runtime is active, then launch the singleplayer campaign.
+6. Make sure your headset's OpenXR runtime is active, then launch the game.
 
 You can also enable VR with the `-vr` command-line option. Settings are stored in `alpine_settings.ini`.
+
+## Default VR controller mapping
+
+<p align="center">
+  <img src="docs/oculus-touch-controls.png" alt="Visual mapping of the Oculus Touch controls for Alpine Faction VR">
+</p>
+
+### Oculus Touch controls
+
+- **Left thumbstick:** Move
+- **Left thumbstick press:** Holster weapon
+- **Left X:** Reload
+- **Left Y:** Toggle flashlight/headlight
+- **Left grip:**
+  - Use/interact normally
+  - Grab the weapon support point for two-handed handling when close enough
+- **Left menu button:** Open/pause menu
+- **Right thumbstick left/right:** Smooth or snap turning, depending on launcher setting
+- **Right thumbstick up:** Previous weapon
+- **Right thumbstick down:** Next weapon
+- **Right thumbstick press:** Toggle laser sight; default is off
+- **Right A:** Crouch
+- **Right B:** Jump
+- **Right trigger:** Primary fire
+- **Right grip, then right trigger:** Alternate fire
+- **Right controller movement:** Aim and control the weapon
+- **Menu navigation:** Aim with the right controller and select with the right trigger
+- **Menu back:** Right B or left menu button
+
+### Valve Index Knuckles controls
+
+- **Left thumbstick:** Move
+- **Left thumbstick press:** Holster weapon
+- **Left A:** Reload
+- **Left B:** Toggle flashlight/headlight
+- **Left squeeze/grip:**
+  - Use/interact normally
+  - Grab the weapon support point for two-handed handling when close enough
+- **Firm left trackpad press:** Open/pause menu
+- **Right thumbstick left/right:** Smooth or snap turning, depending on launcher setting
+- **Right thumbstick up:** Previous weapon
+- **Right thumbstick down:** Next weapon
+- **Right thumbstick press:** Toggle laser sight; default is off
+- **Right A:** Crouch
+- **Right B:** Jump
+- **Right trigger:** Primary fire
+- **Right squeeze/grip, then right trigger:** Alternate fire
+- **Right controller movement:** Aim and control the weapon
+- **Menu navigation:** Aim with the right controller and select with the right trigger
+- **Menu back:** Right B or firm left-trackpad press
 
 ## Removing the VR build
 

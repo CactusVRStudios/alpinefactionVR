@@ -12,10 +12,13 @@ The Dash tree is an input only; all implementation and validation occurs in this
 | Root and `game_patch/CMakeLists.txt` OpenXR option | Same CMake layers | Renamed to `AF_ENABLE_OPENXR`; official Khronos SDK 1.1.60 is pinned and its Win32 static loader is linked only when enabled. |
 | `game_patch/vr/vr.*` | `game_patch/vr/vr.*` | Namespace/log prefix renamed to `afvr`/`AFVR`; Alpine game settings and command registration are retained. |
 | `game_patch/vr/openxr_context.*` | Same path | Existing Alpine-owned D3D11 device is bound through `XR_KHR_D3D11_enable`; no second device or dynamic loader DLL is used. |
-| `game_patch/vr/vr_render_bridge.*` | Same path plus Alpine D3D11 renderer | External eye/HUD targets, target restoration, menu copy, and right-eye mirror use Alpine's renderer and gamma/present pipeline. |
+| `game_patch/vr/vr_render_bridge.*` | Same path plus Alpine D3D11 renderer | External eye/HUD targets, target restoration, and menu copy use Alpine's renderer. The desktop mirror runs at a throttled 30 Hz with non-blocking presentation so the console and validation view remain available without letting monitor/DWM timing pace the headset. |
 | Dash D3D11 projection/renderer/hooks/mesh changes | `game_patch/graphics/d3d11/gr_d3d11_{transform,context,hooks,mesh}.*` | Asymmetric eye projection and external targets are layered onto Alpine's MSAA, gamma pass, outline renderer, emissive/per-pixel-lighting, and mesh paths. |
 | Dash main-loop VR lifecycle | `game_patch/main/main.cpp` | Command-line registration, post-D3D11 initialization, one XR update per RF frame, timing, and teardown are inserted around Alpine's existing frame work. |
 | Dash semantic action hook | `game_patch/input/control_input_filter.*` registry plus `vr.cpp` injection | Composed into Alpine's existing hook owner instead of installing a second hook at the same address. |
+| VR controller face/stick actions | `game_patch/vr/openxr_context.*`, `vr.cpp` | Left-stick click injects RF's Holster action. Right A injects crouch and right B remains jump. Reload uses the left primary face button (Touch X, Index A), while Alpine's flashlight/headlight uses the left secondary face button (Touch Y, Index B). Index pause/menu uses a firm left-trackpad press because that profile has no dedicated application-menu button. |
+| VR laser aim assist | `game_patch/vr/vr.cpp`, `vr_render_bridge.*`, `graphics/d3d11/gr_d3d11.*`, `openxr_context.*` | Right-thumbstick click toggles a default-off translucent red beam. Quest-calibrated weapon-local emitter positions are baked into the centralized `VrWeaponCalibration` table and resolve through the final visible one/two-hand weapon transform. One collision result and identical RF-world endpoints are shared by both eyes. Live `vr_laser_move` and `vr_laser_rotate` commands remain available. The beam retains its validated 1.8 cm cross-section and explicitly rebound asymmetric eye ViewProj. |
+| VR visual-muzzle projectile launch | `game_patch/vr/vr.cpp`, `game_patch/misc/player.cpp` | At the final local singleplayer projectile factory seam, rocket-launcher and rail-gun projectiles use the same Quest-calibrated position and orientation as their laser start. Other guns retain the established firing muzzle, while grenades and remote charges retain HMD-directed throwing. |
 | Dash physical mouse policy | `game_patch/input/mouse.cpp` and VR mouse query hooks | Physical deltas/buttons are suppressed only during supported active VR states; controller UI input is separate. |
 | Dash portal/world stereo hook and culling instrumentation | `game_patch/vr/vr.cpp`, Alpine D3D11 hooks | Simulation remains once per game frame; only audited portal/world/weapon render work is repeated per eye. |
 | Dash first-person weapon transform and hand-material filter | `game_patch/misc/player_fpgun.cpp`, `gr_d3d11_mesh.cpp`, `vr.cpp` | Alpine outline/VFX flushes remain, the desktop viewmodel projection is bypassed only inside VR eye passes, and only dedicated arm/hand material batches are hidden. |
@@ -59,7 +62,8 @@ to validate binary behavior and visual correctness.
 - Untracked `launcher/OptionsVrDlg.cpp/.h` and `tools/run-dfvr.ps1`: ported as Alpine-named files. The Dash-local `AGENTS.md` is an instruction file, not product source, and was not copied.
 - Prototype `docs/VR_ARCHITECTURE.md`: used as architectural reference; this document supersedes its Dash-specific ownership/mapping claims for the Alpine port.
 
-## Unsupported mode policy
+## Experimental multiplayer policy
 
-The launcher rejects `-vr` combined with `-dedicated`. If multiplayer is entered after an OpenXR session starts, AFVR
-logs an actionable warning, destroys its OpenXR context, restores the ordinary frame limiter, and continues in flat mode.
+The launcher rejects `-vr` combined with `-dedicated`. Client multiplayer no longer tears down OpenXR: multiplayer menus,
+local stereo rendering, controller input, and pose-dependent weapon paths are allowed to continue on a best-effort basis.
+AFVR logs a one-time warning because multiplayer VR remains experimental and carries no compatibility guarantee.

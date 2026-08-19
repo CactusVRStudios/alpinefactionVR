@@ -26,7 +26,7 @@ BOOL OptionsVrDlg::OnInitDialog()
 
     m_tool_tip.Create(*this);
     m_tool_tip.AddTool(GetDlgItem(IDC_ENABLE_VR_CHECK),
-        "Launch the Red Faction singleplayer campaign through OpenXR. Direct3D 11 is required.");
+        "Launch Red Faction through OpenXR. Direct3D 11 is required; multiplayer is experimental.");
     m_tool_tip.AddTool(GetDlgItem(IDC_VR_TURN_MODE_COMBO),
         "Choose discrete snap turning or continuous smooth turning for the right thumbstick.");
     m_tool_tip.AddTool(GetDlgItem(IDC_VR_SNAP_ANGLE_EDIT),

@@ -43,6 +43,17 @@ namespace afvr
         gr::d3d11::finish_renderer_vr_eye();
     }
 
+    void render_d3d11_world_laser_beam(const rf::Vector3& start,
+        const rf::Vector3& end)
+    {
+        gr::d3d11::render_renderer_vr_world_laser_beam(start, end);
+    }
+
+    void mirror_d3d11_eye(ID3D11ShaderResourceView* source_view, int width, int height)
+    {
+        gr::d3d11::mirror_renderer_vr_eye(source_view, width, height);
+    }
+
     void begin_d3d11_hud(ID3D11RenderTargetView* render_target_view,
         int width, int height)
     {
@@ -52,11 +63,6 @@ namespace afvr
     void finish_d3d11_hud()
     {
         gr::d3d11::finish_renderer_vr_hud();
-    }
-
-    void mirror_d3d11_eye(ID3D11ShaderResourceView* source_view, int width, int height)
-    {
-        gr::d3d11::mirror_renderer_vr_eye(source_view, width, height);
     }
 
     bool copy_d3d11_menu(ID3D11Texture2D* destination)

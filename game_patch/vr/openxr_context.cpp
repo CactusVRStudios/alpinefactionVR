@@ -208,10 +208,6 @@ namespace afvr
                 "xrGetInstanceProcAddr(xrGetDisplayRefreshRateFB)");
             get_display_refresh_rate_ =
                 reinterpret_cast<PFN_xrGetDisplayRefreshRateFB>(function);
-            check(xrGetInstanceProcAddr(instance_, "xrRequestDisplayRefreshRateFB", &function),
-                "xrGetInstanceProcAddr(xrRequestDisplayRefreshRateFB)");
-            request_display_refresh_rate_ =
-                reinterpret_cast<PFN_xrRequestDisplayRefreshRateFB>(function);
         }
     }
 
@@ -294,11 +290,12 @@ namespace afvr
         xlog::info("[AFVR] OpenXR session created");
     }
 
-    void OpenXrContext::configure_display_refresh_rate()
+    void OpenXrContext::report_display_refresh_rate()
     {
         if (!display_refresh_rate_supported_ || !enumerate_display_refresh_rates_ ||
-            !get_display_refresh_rate_ || !request_display_refresh_rate_) {
-            xlog::warn("[AFVR] Runtime does not support explicit display refresh requests");
+            !get_display_refresh_rate_) {
+            xlog::info(
+                "[AFVR] Display refresh is runtime-controlled; following xrWaitFrame timing");
             return;
         }
 
@@ -330,19 +327,12 @@ namespace afvr
         float current_rate = 0.0f;
         result = get_display_refresh_rate_(session_, &current_rate);
         if (XR_SUCCEEDED(result)) {
-            xlog::info("[AFVR] Runtime display refresh before request: {:.2f} Hz",
+            xlog::info("[AFVR] Following runtime-selected display refresh rate: {:.2f} Hz",
                 current_rate);
         }
-
-        constexpr float requested_rate = 90.0f;
-        result = request_display_refresh_rate_(session_, requested_rate);
-        if (XR_SUCCEEDED(result)) {
-            xlog::info("[AFVR] Explicitly requested {:.2f} Hz from the OpenXR runtime",
-                requested_rate);
-        }
         else {
-            xlog::warn("[AFVR] OpenXR runtime rejected the {:.2f} Hz request ({})",
-                requested_rate, static_cast<int>(result));
+            xlog::warn("[AFVR] Could not read the runtime-selected display refresh rate ({})",
+                static_cast<int>(result));
         }
     }
 
@@ -407,6 +397,10 @@ namespace afvr
             "left_thumbstick", "Left Thumbstick", left_hand);
         create_action(right_thumbstick_action_, XR_ACTION_TYPE_VECTOR2F_INPUT,
             "right_thumbstick", "Right Thumbstick", right_hand);
+        create_action(left_thumbstick_click_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "left_thumbstick_click", "Holster Weapon", left_hand);
+        create_action(right_thumbstick_click_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "right_thumbstick_click", "Toggle Laser Sight", right_hand);
         create_action(grip_pose_action_, XR_ACTION_TYPE_POSE_INPUT,
             "grip_pose", "Grip Pose", both_hands);
         create_action(aim_pose_action_, XR_ACTION_TYPE_POSE_INPUT,
@@ -414,13 +408,17 @@ namespace afvr
         create_action(right_trigger_action_, XR_ACTION_TYPE_FLOAT_INPUT,
             "right_trigger", "Right Trigger", right_hand);
         create_action(reload_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
-            "reload", "Reload", right_hand);
+            "reload", "Reload", left_hand);
         create_action(jump_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
             "jump", "Jump", right_hand);
         create_action(crouch_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
-            "crouch", "Crouch", left_hand);
+            "crouch", "Crouch", right_hand);
+        create_action(flashlight_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "flashlight", "Toggle Flashlight or Headlight", left_hand);
         create_action(grip_action_, XR_ACTION_TYPE_FLOAT_INPUT, "grip", "Grip", both_hands);
         create_action(menu_action_, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu", left_hand);
+        create_action(index_menu_force_action_, XR_ACTION_TYPE_FLOAT_INPUT,
+            "index_menu_force", "Menu (Index Trackpad)", left_hand);
 
         auto path = [&](const char* value) {
             XrPath result = XR_NULL_PATH;
@@ -430,18 +428,17 @@ namespace afvr
         const std::array touch_bindings{
             XrActionSuggestedBinding{left_thumbstick_action_, path("/user/hand/left/input/thumbstick")},
             XrActionSuggestedBinding{right_thumbstick_action_, path("/user/hand/right/input/thumbstick")},
+            XrActionSuggestedBinding{left_thumbstick_click_action_, path("/user/hand/left/input/thumbstick/click")},
+            XrActionSuggestedBinding{right_thumbstick_click_action_, path("/user/hand/right/input/thumbstick/click")},
             XrActionSuggestedBinding{grip_pose_action_, path("/user/hand/left/input/grip/pose")},
             XrActionSuggestedBinding{grip_pose_action_, path("/user/hand/right/input/grip/pose")},
             XrActionSuggestedBinding{aim_pose_action_, path("/user/hand/left/input/aim/pose")},
             XrActionSuggestedBinding{aim_pose_action_, path("/user/hand/right/input/aim/pose")},
             XrActionSuggestedBinding{right_trigger_action_, path("/user/hand/right/input/trigger/value")},
-            XrActionSuggestedBinding{reload_action_, path("/user/hand/right/input/a/click")},
+            XrActionSuggestedBinding{crouch_action_, path("/user/hand/right/input/a/click")},
             XrActionSuggestedBinding{jump_action_, path("/user/hand/right/input/b/click")},
-            // Touch has X/Y rather than a literally labelled left B. Virtual
-            // Desktop/controller remapping can expose the requested left-B
-            // position as either face button, so accept both for crouch.
-            XrActionSuggestedBinding{crouch_action_, path("/user/hand/left/input/x/click")},
-            XrActionSuggestedBinding{crouch_action_, path("/user/hand/left/input/y/click")},
+            XrActionSuggestedBinding{reload_action_, path("/user/hand/left/input/x/click")},
+            XrActionSuggestedBinding{flashlight_action_, path("/user/hand/left/input/y/click")},
             XrActionSuggestedBinding{grip_action_, path("/user/hand/left/input/squeeze/value")},
             XrActionSuggestedBinding{grip_action_, path("/user/hand/right/input/squeeze/value")},
             XrActionSuggestedBinding{menu_action_, path("/user/hand/left/input/menu/click")},
@@ -449,19 +446,22 @@ namespace afvr
         const std::array index_bindings{
             XrActionSuggestedBinding{left_thumbstick_action_, path("/user/hand/left/input/thumbstick")},
             XrActionSuggestedBinding{right_thumbstick_action_, path("/user/hand/right/input/thumbstick")},
+            XrActionSuggestedBinding{left_thumbstick_click_action_, path("/user/hand/left/input/thumbstick/click")},
+            XrActionSuggestedBinding{right_thumbstick_click_action_, path("/user/hand/right/input/thumbstick/click")},
             XrActionSuggestedBinding{grip_pose_action_, path("/user/hand/left/input/grip/pose")},
             XrActionSuggestedBinding{grip_pose_action_, path("/user/hand/right/input/grip/pose")},
             XrActionSuggestedBinding{aim_pose_action_, path("/user/hand/left/input/aim/pose")},
             XrActionSuggestedBinding{aim_pose_action_, path("/user/hand/right/input/aim/pose")},
             XrActionSuggestedBinding{right_trigger_action_, path("/user/hand/right/input/trigger/value")},
-            XrActionSuggestedBinding{reload_action_, path("/user/hand/right/input/a/click")},
+            XrActionSuggestedBinding{crouch_action_, path("/user/hand/right/input/a/click")},
             XrActionSuggestedBinding{jump_action_, path("/user/hand/right/input/b/click")},
-            XrActionSuggestedBinding{crouch_action_, path("/user/hand/left/input/b/click")},
+            XrActionSuggestedBinding{reload_action_, path("/user/hand/left/input/a/click")},
+            XrActionSuggestedBinding{flashlight_action_, path("/user/hand/left/input/b/click")},
             XrActionSuggestedBinding{grip_action_, path("/user/hand/left/input/squeeze/value")},
             XrActionSuggestedBinding{grip_action_, path("/user/hand/right/input/squeeze/value")},
-            // Index has no dedicated application-menu button. Left A is the
-            // non-conflicting pause/menu control; right A remains reload.
-            XrActionSuggestedBinding{menu_action_, path("/user/hand/left/input/a/click")},
+            // Index has no dedicated application-menu button. Use a firm left
+            // trackpad press so left A remains available for reload.
+            XrActionSuggestedBinding{index_menu_force_action_, path("/user/hand/left/input/trackpad/force")},
         };
         auto suggest_bindings = [&](XrPath interaction_profile,
             const auto& bindings, const char* profile_name) {
@@ -541,13 +541,19 @@ namespace afvr
 
             input_state_.left_thumbstick = get_vector(left_thumbstick_action_, hand_paths_[0]);
             input_state_.right_thumbstick = get_vector(right_thumbstick_action_, hand_paths_[1]);
+            input_state_.left_thumbstick_click =
+                get_boolean(left_thumbstick_click_action_, hand_paths_[0]);
+            input_state_.right_thumbstick_click =
+                get_boolean(right_thumbstick_click_action_, hand_paths_[1]);
             input_state_.right_trigger = get_float(right_trigger_action_, hand_paths_[1]);
             input_state_.grip[0] = get_float(grip_action_, hand_paths_[0]);
             input_state_.grip[1] = get_float(grip_action_, hand_paths_[1]);
-            input_state_.reload = get_boolean(reload_action_, hand_paths_[1]);
+            input_state_.reload = get_boolean(reload_action_, hand_paths_[0]);
             input_state_.jump = get_boolean(jump_action_, hand_paths_[1]);
-            input_state_.crouch = get_boolean(crouch_action_, hand_paths_[0]);
-            input_state_.menu = get_boolean(menu_action_, hand_paths_[0]);
+            input_state_.crouch = get_boolean(crouch_action_, hand_paths_[1]);
+            input_state_.flashlight = get_boolean(flashlight_action_, hand_paths_[0]);
+            input_state_.menu = get_boolean(menu_action_, hand_paths_[0]) ||
+                get_float(index_menu_force_action_, hand_paths_[0]) >= 0.65f;
 
             if (!interaction_profile_logged_) {
                 for (XrPath hand_path : hand_paths_) {
@@ -560,10 +566,10 @@ namespace afvr
                     }
                     interaction_profile_logged_ = true;
                     if (profile_state.interactionProfile == touch_interaction_profile_) {
-                        xlog::info("[AFVR] Oculus Touch profile active: right B jump, left X/Y crouch compatibility binding");
+                        xlog::info("[AFVR] Oculus Touch profile active: left stick holster, left X reload, left Y flashlight, right A crouch, right B jump");
                     }
                     else if (profile_state.interactionProfile == index_interaction_profile_) {
-                        xlog::info("[AFVR] Valve Index profile active: right B jump, left B crouch, left A menu");
+                        xlog::info("[AFVR] Valve Index profile active: left stick holster, left A reload, left B flashlight, right A crouch, right B jump, left trackpad menu");
                     }
                     else {
                         std::array<char, XR_MAX_PATH_LENGTH> profile_name{};
@@ -764,8 +770,8 @@ namespace afvr
                 }
 
                 D3D11_SHADER_RESOURCE_VIEW_DESC shader_resource_desc{};
-                // The desktop mirror must sample the same stored gamma-space
-                // values without decoding them back to linear.
+                // Sample stored gamma-space values without decoding them. This
+                // view is used only by the throttled desktop mirror.
                 shader_resource_desc.Format = view_format;
                 shader_resource_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
                 shader_resource_desc.Texture2D.MostDetailedMip = 0;
@@ -935,6 +941,17 @@ namespace afvr
                     handle_session_state_changed(
                         reinterpret_cast<const XrEventDataSessionStateChanged&>(event));
                     break;
+#ifdef XR_FB_display_refresh_rate
+                case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB: {
+                    const auto& refresh_event =
+                        reinterpret_cast<const XrEventDataDisplayRefreshRateChangedFB&>(event);
+                    xlog::info(
+                        "[AFVR] Runtime changed display refresh rate from {:.2f} to {:.2f} Hz; frame pacing follows automatically",
+                        refresh_event.fromDisplayRefreshRate,
+                        refresh_event.toDisplayRefreshRate);
+                    break;
+                }
+#endif
                 default:
                     xlog::trace("[AFVR] OpenXR event type {}", static_cast<int>(event.type));
                     break;
@@ -968,12 +985,24 @@ namespace afvr
                 else {
                     session_running_ = true;
                     xlog::info("[AFVR] OpenXR session begun");
-                    configure_display_refresh_rate();
+                    report_display_refresh_rate();
                 }
                 break;
             }
             case XR_SESSION_STATE_STOPPING:
                 if (session_running_) {
+                    if (frame_begun_) {
+                        XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+                        frame_end_info.displayTime = waited_frame_state_.predictedDisplayTime;
+                        frame_end_info.environmentBlendMode = environment_blend_mode_;
+                        const XrResult frame_result = xrEndFrame(session_, &frame_end_info);
+                        if (XR_FAILED(frame_result)) {
+                            xlog::warn("[AFVR] xrEndFrame during session stop failed ({})",
+                                static_cast<int>(frame_result));
+                        }
+                        frame_waited_ = false;
+                        frame_begun_ = false;
+                    }
                     XrResult result = xrEndSession(session_);
                     if (XR_FAILED(result)) {
                         xlog::error("[AFVR] xrEndSession failed ({})", static_cast<int>(result));
@@ -999,22 +1028,27 @@ namespace afvr
         }
 
         try {
-            // A non-gameplay RF frame may never reach the portal hook. Complete
-            // its already-waited XR frame without layers before waiting again.
+            // A non-rendering RF frame may never reach either the world or menu
+            // submission hook. Complete its already-begun XR frame without
+            // layers before waiting again.
             if (frame_waited_) {
-                XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
-                check(xrBeginFrame(session_, &begin_info), "xrBeginFrame(empty)");
                 XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
                 end_info.displayTime = waited_frame_state_.predictedDisplayTime;
                 end_info.environmentBlendMode = environment_blend_mode_;
+                const auto end_start = std::chrono::steady_clock::now();
                 check(xrEndFrame(session_, &end_info), "xrEndFrame(empty)");
+                timing_note_phase(TimingPhase::end_frame,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - end_start).count());
                 frame_waited_ = false;
+                frame_begun_ = false;
             }
 
             XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
             XrFrameState frame_state{XR_TYPE_FRAME_STATE};
             using Clock = std::chrono::steady_clock;
             static Clock::time_point previous_wait_return{};
+            static XrTime previous_predicted_display_time = 0;
             const auto wait_start = Clock::now();
             check(xrWaitFrame(session_, &wait_info, &frame_state), "xrWaitFrame");
             const auto wait_return = Clock::now();
@@ -1028,16 +1062,44 @@ namespace afvr
                 return_interval_ms = 0.0;
             }
             previous_wait_return = wait_return;
+            double predicted_interval_ms = 0.0;
+            if (previous_predicted_display_time > 0 &&
+                frame_state.predictedDisplayTime > previous_predicted_display_time) {
+                predicted_interval_ms = static_cast<double>(
+                    frame_state.predictedDisplayTime - previous_predicted_display_time) /
+                    1'000'000.0;
+                if (predicted_interval_ms > 1000.0) {
+                    predicted_interval_ms = 0.0;
+                }
+            }
+            previous_predicted_display_time = frame_state.predictedDisplayTime;
             const double runtime_target_hz = frame_state.predictedDisplayPeriod > 0
                 ? 1'000'000'000.0 /
                     static_cast<double>(frame_state.predictedDisplayPeriod)
                 : 0.0;
-            timing_note_xr_wait(wait_ms, return_interval_ms, runtime_target_hz);
+            timing_note_xr_wait(wait_ms, return_interval_ms,
+                predicted_interval_ms, runtime_target_hz);
             waited_frame_state_ = frame_state;
+
+            // Begin immediately after the runtime pacing wait. Delaying Begin
+            // until RF reaches its portal/menu render hook made Virtual Desktop
+            // account the intervening game work outside the runtime's frame
+            // budget, producing a lower submission cadence than the headset.
+            XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
+            const auto begin_start = Clock::now();
+            check(xrBeginFrame(session_, &begin_info), "xrBeginFrame");
+            timing_note_phase(TimingPhase::begin_frame,
+                std::chrono::duration<double, std::milli>(
+                    Clock::now() - begin_start).count());
             frame_waited_ = true;
+            frame_begun_ = true;
             if (!first_wait_frame_logged_) {
                 first_wait_frame_logged_ = true;
                 xlog::info("[AFVR] First xrWaitFrame succeeded");
+            }
+            if (!first_begin_frame_logged_) {
+                first_begin_frame_logged_ = true;
+                xlog::info("[AFVR] xrBeginFrame now follows xrWaitFrame immediately");
             }
             if (!display_period_logged_ && frame_state.predictedDisplayPeriod > 0) {
                 display_period_logged_ = true;
@@ -1056,6 +1118,7 @@ namespace afvr
             xlog::error("[AFVR] OpenXR frame wait failed: {}", error.what());
             exit_requested_ = true;
             frame_waited_ = false;
+            frame_begun_ = false;
             return false;
         }
     }
@@ -1072,19 +1135,10 @@ namespace afvr
 
         const XrFrameState frame_state = waited_frame_state_;
         frame_waited_ = false;
-        bool frame_begun = false;
+        bool frame_begun = frame_begun_;
         bool hud_image_acquired = false;
         const XrTime predicted_display_time = frame_state.predictedDisplayTime;
         try {
-
-            XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
-            check(xrBeginFrame(session_, &begin_info), "xrBeginFrame");
-            frame_begun = true;
-            if (!first_begin_frame_logged_) {
-                first_begin_frame_logged_ = true;
-                xlog::info("[AFVR] First xrBeginFrame succeeded");
-            }
-
             std::array<XrCompositionLayerProjectionView, 2> projection_views{};
             std::array<const XrCompositionLayerBaseHeader*, 2> submitted_layers{};
             uint32_t submitted_layer_count = 0;
@@ -1124,6 +1178,7 @@ namespace afvr
                         auto& swapchain = eye_swapchains_[eye];
                         uint32_t image_index = 0;
                         XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                        const auto image_wait_start = std::chrono::steady_clock::now();
                         check(xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &image_index),
                             "xrAcquireSwapchainImage");
                         if (!first_eye_acquired_logged_[eye]) {
@@ -1137,7 +1192,11 @@ namespace afvr
                             image_wait.timeout = XR_INFINITE_DURATION;
                             check(xrWaitSwapchainImage(swapchain.handle, &image_wait),
                                 "xrWaitSwapchainImage");
+                            timing_note_phase(TimingPhase::eye_image_wait,
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - image_wait_start).count());
 
+                            const auto render_start = std::chrono::steady_clock::now();
                             render_eye(OpenXrEyeRenderInfo{
                                 eye,
                                 views[eye],
@@ -1148,10 +1207,17 @@ namespace afvr
                                 swapchain.width,
                                 swapchain.height,
                             });
+                            timing_note_phase(TimingPhase::eye_render,
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - render_start).count());
 
                             XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                            const auto release_start = std::chrono::steady_clock::now();
                             check(xrReleaseSwapchainImage(swapchain.handle, &release_info),
                                 "xrReleaseSwapchainImage");
+                            timing_note_phase(TimingPhase::eye_release,
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - release_start).count());
                             image_acquired = false;
                         }
                         catch (...) {
@@ -1185,6 +1251,7 @@ namespace afvr
                         uint32_t hud_image_index = 0;
                         XrSwapchainImageAcquireInfo acquire_info{
                             XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                        const auto hud_wait_start = std::chrono::steady_clock::now();
                         check(xrAcquireSwapchainImage(hud_swapchain_.handle,
                             &acquire_info, &hud_image_index),
                             "xrAcquireSwapchainImage(HUD)");
@@ -1194,15 +1261,26 @@ namespace afvr
                         image_wait.timeout = XR_INFINITE_DURATION;
                         check(xrWaitSwapchainImage(hud_swapchain_.handle, &image_wait),
                             "xrWaitSwapchainImage(HUD)");
+                        timing_note_phase(TimingPhase::hud_image_wait,
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - hud_wait_start).count());
+                        const auto hud_render_start = std::chrono::steady_clock::now();
                         render_hud(OpenXrHudRenderInfo{
                             hud_swapchain_.render_target_views[hud_image_index],
                             hud_swapchain_.width,
                             hud_swapchain_.height,
                         });
+                        timing_note_phase(TimingPhase::hud_render,
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - hud_render_start).count());
                         XrSwapchainImageReleaseInfo release_info{
                             XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                        const auto hud_release_start = std::chrono::steady_clock::now();
                         check(xrReleaseSwapchainImage(hud_swapchain_.handle, &release_info),
                             "xrReleaseSwapchainImage(HUD)");
+                        timing_note_phase(TimingPhase::hud_release,
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - hud_release_start).count());
                         hud_image_acquired = false;
 
                         hud_layer.layerFlags =
@@ -1234,8 +1312,13 @@ namespace afvr
             end_info.environmentBlendMode = environment_blend_mode_;
             end_info.layerCount = submitted_layer_count;
             end_info.layers = submitted_layer_count ? submitted_layers.data() : nullptr;
+            const auto end_start = std::chrono::steady_clock::now();
             check(xrEndFrame(session_, &end_info), "xrEndFrame");
+            timing_note_phase(TimingPhase::end_frame,
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - end_start).count());
             frame_begun = false;
+            frame_begun_ = false;
 
             if (projection_submitted && !first_frame_logged_) {
                 first_frame_logged_ = true;
@@ -1249,7 +1332,7 @@ namespace afvr
             }
             if (submitted_layer_count > 1 && !first_hud_layer_logged_) {
                 first_hud_layer_logged_ = true;
-                xlog::info("[AFVR] First singleplayer HUD OpenXR quad layer submitted");
+                xlog::info("[AFVR] First gameplay HUD OpenXR quad layer submitted");
             }
             if (projection_submitted) {
                 timing_note_xr_submission();
@@ -1273,6 +1356,7 @@ namespace afvr
                 end_info.environmentBlendMode = environment_blend_mode_;
                 xrEndFrame(session_, &end_info);
             }
+            frame_begun_ = false;
             xlog::error("[AFVR] OpenXR frame failed: {}", error.what());
             exit_requested_ = true;
             return false;
@@ -1294,7 +1378,7 @@ namespace afvr
             return;
         }
         hud_active_ = active;
-        xlog::info("[AFVR] Singleplayer HUD quad {}",
+        xlog::info("[AFVR] Gameplay HUD quad {}",
             active ? "enabled" : "hidden");
     }
 
@@ -1352,14 +1436,10 @@ namespace afvr
 
         const XrFrameState frame_state = waited_frame_state_;
         frame_waited_ = false;
-        bool frame_begun = false;
+        bool frame_begun = frame_begun_;
         bool image_acquired = false;
         uint32_t image_index = 0;
         try {
-            XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
-            check(xrBeginFrame(session_, &begin_info), "xrBeginFrame(menu)");
-            frame_begun = true;
-
             const XrCompositionLayerBaseHeader* submitted_layer = nullptr;
             XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
             if (frame_state.shouldRender) {
@@ -1396,6 +1476,7 @@ namespace afvr
                     }
 
                     XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                    const auto menu_wait_start = std::chrono::steady_clock::now();
                     check(xrAcquireSwapchainImage(menu_swapchain_.handle,
                         &acquire_info, &image_index), "xrAcquireSwapchainImage(menu)");
                     image_acquired = true;
@@ -1403,14 +1484,25 @@ namespace afvr
                     image_wait.timeout = XR_INFINITE_DURATION;
                     check(xrWaitSwapchainImage(menu_swapchain_.handle, &image_wait),
                         "xrWaitSwapchainImage(menu)");
+                    timing_note_phase(TimingPhase::menu_image_wait,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - menu_wait_start).count());
+                    const auto menu_copy_start = std::chrono::steady_clock::now();
                     render_menu(OpenXrMenuRenderInfo{
                         menu_swapchain_.images[image_index].texture,
                         menu_swapchain_.width,
                         menu_swapchain_.height,
                     });
+                    timing_note_phase(TimingPhase::menu_copy,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - menu_copy_start).count());
                     XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    const auto menu_release_start = std::chrono::steady_clock::now();
                     check(xrReleaseSwapchainImage(menu_swapchain_.handle, &release_info),
                         "xrReleaseSwapchainImage(menu)");
+                    timing_note_phase(TimingPhase::menu_release,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - menu_release_start).count());
                     image_acquired = false;
 
                     quad.space = reference_space_;
@@ -1433,8 +1525,13 @@ namespace afvr
             end_info.environmentBlendMode = environment_blend_mode_;
             end_info.layerCount = submitted_layer ? 1u : 0u;
             end_info.layers = submitted_layer ? &submitted_layer : nullptr;
+            const auto end_start = std::chrono::steady_clock::now();
             check(xrEndFrame(session_, &end_info), "xrEndFrame(menu)");
+            timing_note_phase(TimingPhase::end_frame,
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - end_start).count());
             frame_begun = false;
+            frame_begun_ = false;
             if (submitted_layer) {
                 timing_note_xr_submission();
                 if (!first_menu_layer_logged_) {
@@ -1455,6 +1552,7 @@ namespace afvr
                 end_info.environmentBlendMode = environment_blend_mode_;
                 xrEndFrame(session_, &end_info);
             }
+            frame_begun_ = false;
             xlog::error("[AFVR] OpenXR menu frame failed: {}", error.what());
             exit_requested_ = true;
             return false;
@@ -1513,6 +1611,19 @@ namespace afvr
 
     void OpenXrContext::shutdown()
     {
+        if (session_ != XR_NULL_HANDLE && frame_begun_) {
+            XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
+            end_info.displayTime = waited_frame_state_.predictedDisplayTime;
+            end_info.environmentBlendMode = environment_blend_mode_;
+            const XrResult result = xrEndFrame(session_, &end_info);
+            if (XR_FAILED(result)) {
+                xlog::warn("[AFVR] xrEndFrame during shutdown failed ({})",
+                    static_cast<int>(result));
+            }
+            frame_waited_ = false;
+            frame_begun_ = false;
+        }
+
         destroy_swapchains();
 
         for (XrSpace& space : grip_spaces_) {
@@ -1566,6 +1677,7 @@ namespace afvr
         session_running_ = false;
         exit_requested_ = false;
         frame_waited_ = false;
+        frame_begun_ = false;
         waited_frame_state_ = XrFrameState{XR_TYPE_FRAME_STATE};
         display_refresh_rate_supported_ = false;
         first_frame_logged_ = false;
@@ -1587,19 +1699,22 @@ namespace afvr
         index_interaction_profile_ = XR_NULL_PATH;
         left_thumbstick_action_ = XR_NULL_HANDLE;
         right_thumbstick_action_ = XR_NULL_HANDLE;
+        left_thumbstick_click_action_ = XR_NULL_HANDLE;
+        right_thumbstick_click_action_ = XR_NULL_HANDLE;
         grip_pose_action_ = XR_NULL_HANDLE;
         aim_pose_action_ = XR_NULL_HANDLE;
         right_trigger_action_ = XR_NULL_HANDLE;
         reload_action_ = XR_NULL_HANDLE;
         jump_action_ = XR_NULL_HANDLE;
         crouch_action_ = XR_NULL_HANDLE;
+        flashlight_action_ = XR_NULL_HANDLE;
         grip_action_ = XR_NULL_HANDLE;
         menu_action_ = XR_NULL_HANDLE;
+        index_menu_force_action_ = XR_NULL_HANDLE;
         environment_blend_mode_ = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         get_d3d11_graphics_requirements_ = nullptr;
         enumerate_display_refresh_rates_ = nullptr;
         get_display_refresh_rate_ = nullptr;
-        request_display_refresh_rate_ = nullptr;
     }
 
     void OpenXrContext::check(XrResult result, const char* operation) const

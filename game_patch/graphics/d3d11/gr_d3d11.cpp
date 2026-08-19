@@ -1,5 +1,7 @@
 #include <cassert>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <dxgi1_4.h>
 #include <dxgi1_5.h>
 #include <xlog/xlog.h>
@@ -657,12 +659,18 @@ namespace gr::d3d11
 
     void Renderer::flip()
     {
+        const bool vr_session_running = afvr::is_session_running();
+        const bool vr_menu_active = afvr::is_menu_capture_active();
+        const bool vr_desktop_update = vr_session_running &&
+            afvr::should_update_desktop_mirror();
         // Pace the CPU against the GPU's presentation queue before we do any
         // end-of-frame work. This is the canonical placement for the frame-latency
         // waitable object (MSFT samples wait at frame-start); it gates Present()
         // on the swap chain being ready to accept the next frame. The handle is
         // auto-reset and starts signaled, so the first wait returns immediately.
-        if (frame_latency_wait_handle_) {
+        // OpenXR owns frame pacing while VR is active; waiting on this desktop
+        // swap-chain handle would instead pace the headset from the monitor.
+        if (frame_latency_wait_handle_ && !vr_session_running) {
             DWORD wait_result = WaitForSingleObject(frame_latency_wait_handle_, 1000);
             if (wait_result == WAIT_TIMEOUT) {
                 if (!frame_latency_stall_logged_) {
@@ -683,13 +691,19 @@ namespace gr::d3d11
         dyn_geo_renderer_->flush();
         entity_shadow_renderer_->render_debug_overlay(context_);
         entity_shadow_renderer_->unbind_shadow_resources(context_);
-        if (msaa_render_target_) {
+        if (msaa_render_target_ &&
+            (!vr_session_running || vr_menu_active || vr_desktop_update)) {
             // Resolve MSAA into scene_texture_ unconditionally. The final copy to
             // back_buffer_ happens below — either via the gamma pass, or via a
             // CopyResource when the gamma pass is skipped.
             context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
         }
-        if (skip_gamma_pass_) {
+        if (vr_session_running && !vr_menu_active && !vr_desktop_update) {
+            // The headset already received both projection images and the HUD
+            // directly through OpenXR. Skip redundant desktop image work on
+            // frames that are not part of the throttled monitor stream.
+        }
+        else if (skip_gamma_pass_) {
             // Straight copy into the back buffer; cheaper than the gamma pixel shader
             // and avoids the state invalidate, while keeping scene_texture_ stable
             // for read_back_buffer. CopyResource forbids src/dst being bound as RTV,
@@ -710,29 +724,45 @@ namespace gr::d3d11
         // Alpine composes its final desktop image through scene resolve and the
         // gamma pass. Submit the menu only after those steps so the OpenXR quad
         // receives the exact pixels that are visible in the desktop window.
-        afvr::submit_menu_frame();
-        xlog::trace("Presenting frame {}", rf::frame_count);
-        const bool vr_session_running = afvr::is_session_running();
-        UINT sync_interval = !vr_session_running && g_alpine_system_config.vsync ? 1 : 0;
-        if (vr_session_running && !vr_present_vsync_disabled_logged_) {
-            vr_present_vsync_disabled_logged_ = true;
-            xlog::info("[AFVR] Desktop mirror vsync disabled for VR");
+        if (vr_menu_active) {
+            afvr::submit_menu_frame();
         }
+
+        // Most headset frames never touch DXGI. The monitor is updated at about
+        // 30 Hz only, after the OpenXR submission has completed, and Present is
+        // explicitly non-blocking so a full DWM queue can only drop the mirror.
+        if (vr_session_running && !vr_desktop_update) {
+            render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+            render_context_->update_per_frame_constants();
+            return;
+        }
+        xlog::trace("Presenting frame {}", rf::frame_count);
+        UINT sync_interval = !vr_session_running && g_alpine_system_config.vsync ? 1 : 0;
         // DXGI_PRESENT_ALLOW_TEARING can only be combined with sync_interval 0, and only
         // works when the swap chain was created with DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.
         UINT present_flags = 0;
         if (allow_tearing_ && sync_interval == 0) {
             present_flags |= DXGI_PRESENT_ALLOW_TEARING;
         }
-        const auto present_start = std::chrono::steady_clock::now();
-        DF_GR_D3D11_CHECK_HR(
-            swap_chain_->Present(sync_interval, present_flags)
-        );
         if (vr_session_running) {
-            const auto present_end = std::chrono::steady_clock::now();
+            present_flags |= DXGI_PRESENT_DO_NOT_WAIT;
+        }
+        const auto present_start = std::chrono::steady_clock::now();
+        const HRESULT present_result = swap_chain_->Present(sync_interval, present_flags);
+        if (vr_session_running && present_result == DXGI_ERROR_WAS_STILL_DRAWING) {
+            if (!vr_present_queue_busy_logged_) {
+                vr_present_queue_busy_logged_ = true;
+                xlog::info(
+                    "[AFVR] Desktop mirror queue busy; dropping monitor update without stalling OpenXR");
+            }
+        }
+        else {
+            DF_GR_D3D11_CHECK_HR(present_result);
+        }
+        if (vr_session_running) {
             afvr::timing_note_desktop_present(
                 std::chrono::duration<double, std::milli>(
-                    present_end - present_start).count());
+                    std::chrono::steady_clock::now() - present_start).count());
         }
         // Flip swap effect clears render target after Present call
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
@@ -920,6 +950,9 @@ namespace gr::d3d11
         vr_eye_depth_stencil_view_ = depth_stencil_view;
         vr_eye_width_ = width;
         vr_eye_height_ = height;
+        vr_active_eye_projection_ = projection;
+        vr_active_eye_position_ = rf::gr::eye_pos;
+        vr_active_eye_orientation_ = rf::gr::eye_matrix;
         render_context_->set_render_target(render_target_view, depth_stencil_view);
         D3D11_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(width);
@@ -956,6 +989,120 @@ namespace gr::d3d11
         vr_eye_depth_stencil_view_ = nullptr;
         vr_eye_width_ = 0;
         vr_eye_height_ = 0;
+        vr_active_eye_projection_.reset();
+    }
+
+    void Renderer::render_vr_world_laser_beam(const rf::Vector3& start,
+        const rf::Vector3& end)
+    {
+        if (!vr_eye_render_target_view_ || !vr_active_eye_projection_) {
+            return;
+        }
+
+        // The controller marker proved this direct GpuVertex world-space path
+        // coherent on the headset. Keep that exact path for the elongated beam
+        // and re-upload the eye ViewProj immediately before every draw.
+        dyn_geo_renderer_->flush();
+        render_context_->update_view_proj_transform(*vr_active_eye_projection_,
+            vr_active_eye_position_, vr_active_eye_orientation_);
+
+        const rf::Vector3 axis = end - start;
+        const float length = axis.len();
+        if (length <= 0.005f) {
+            return;
+        }
+        const rf::Vector3 forward = axis / length;
+        const rf::Vector3 reference_up = std::abs(forward.y) < 0.95f
+            ? rf::Vector3{0.0f, 1.0f, 0.0f}
+            : rf::Vector3{1.0f, 0.0f, 0.0f};
+        rf::Vector3 right = reference_up.cross(forward);
+        right /= right.len();
+        rf::Vector3 up = forward.cross(right);
+        up /= up.len();
+
+        constexpr size_t vertex_count = 36;
+        if (!vr_world_debug_vertex_buffer_) {
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = sizeof(GpuVertex) * vertex_count;
+            desc.Usage = D3D11_USAGE_DYNAMIC;
+            desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            DF_GR_D3D11_CHECK_HR(device_->CreateBuffer(
+                &desc, nullptr, &vr_world_debug_vertex_buffer_));
+        }
+
+        // The accepted marker was 6 cm across. A 70% reduction produces an
+        // 18 mm square beam, while retaining enough volume for stable stereo.
+        constexpr float beam_half_width = 0.009f;
+        const rf::Color beam_color{255, 0, 0, 72};
+        const auto make_vertex = [](const rf::Vector3& position,
+            const rf::Color& color) {
+            return GpuVertex{
+                position.x, position.y, position.z,
+                {0.0f, 1.0f, 0.0f}, pack_color(color),
+                0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            };
+        };
+        const std::array corners{
+            start - right * beam_half_width - up * beam_half_width,
+            start + right * beam_half_width - up * beam_half_width,
+            start + right * beam_half_width + up * beam_half_width,
+            start - right * beam_half_width + up * beam_half_width,
+            end - right * beam_half_width - up * beam_half_width,
+            end + right * beam_half_width - up * beam_half_width,
+            end + right * beam_half_width + up * beam_half_width,
+            end - right * beam_half_width + up * beam_half_width,
+        };
+        constexpr std::array<uint8_t, vertex_count> corner_indices{
+            0, 2, 1, 0, 3, 2,
+            4, 5, 6, 4, 6, 7,
+            0, 4, 7, 0, 7, 3,
+            1, 2, 6, 1, 6, 5,
+            0, 1, 5, 0, 5, 4,
+            3, 7, 6, 3, 6, 2,
+        };
+        std::array<GpuVertex, vertex_count> vertices{};
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            vertices[i] = make_vertex(corners[corner_indices[i]], beam_color);
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        DF_GR_D3D11_CHECK_HR(context_->Map(vr_world_debug_vertex_buffer_, 0,
+            D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+        std::memcpy(mapped.pData, vertices.data(), sizeof(vertices));
+        context_->Unmap(vr_world_debug_vertex_buffer_, 0);
+
+        constexpr rf::gr::Mode mode{
+            rf::gr::TEXTURE_SOURCE_NONE,
+            rf::gr::COLOR_SOURCE_VERTEX,
+            rf::gr::ALPHA_SOURCE_VERTEX,
+            rf::gr::ALPHA_BLEND_ALPHA,
+            rf::gr::ZBUFFER_TYPE_READ,
+            rf::gr::FOG_NOT_ALLOWED,
+        };
+        const rf::Matrix3 identity{
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f},
+        };
+        render_context_->set_vertex_shader(
+            shader_manager_->get_vertex_shader(VertexShaderId::standard));
+        render_context_->set_pixel_shader(
+            shader_manager_->get_pixel_shader(PixelShaderId::ui));
+        render_context_->set_vertex_buffer(
+            vr_world_debug_vertex_buffer_, sizeof(GpuVertex));
+        render_context_->set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        render_context_->set_cull_mode(D3D11_CULL_NONE);
+        render_context_->set_model_transform({}, identity);
+        render_context_->set_textures(-1, -1);
+        render_context_->set_mode(mode);
+        context_->Draw(static_cast<UINT>(vertices.size()), 0);
+
+        if (!vr_world_debug_renderer_logged_) {
+            vr_world_debug_renderer_logged_ = true;
+            xlog::info(
+                "[AFVR][LASER] Validated stereo path now renders a shared 1.8 cm translucent RF-world beam to the single collision endpoint");
+        }
     }
 
     void Renderer::begin_vr_hud(ID3D11RenderTargetView* render_target_view,
@@ -1080,7 +1227,8 @@ namespace gr::d3d11
         render_context_->set_textures(-1, -1);
         if (!vr_mirror_logged_) {
             vr_mirror_logged_ = true;
-            xlog::info("[AFVR] Desktop mirror is sampling the right OpenXR eye");
+            xlog::info(
+                "[AFVR] Desktop mirror restored at 30 Hz on a best-effort presentation path");
         }
     }
 

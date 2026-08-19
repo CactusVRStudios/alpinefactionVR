@@ -188,7 +188,7 @@ BEGIN
     LTEXT           "Smooth speed:",IDC_STATIC,128,32,48,8
     EDITTEXT        IDC_VR_SMOOTH_SPEED_EDIT,180,30,30,13,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "deg/s",IDC_STATIC,214,32,24,8
-    LTEXT           "Singleplayer campaign only; requires an active OpenXR runtime",IDC_STATIC,0,52,250,8
+    LTEXT           "Requires OpenXR; multiplayer is experimental",IDC_STATIC,0,52,250,8
 END
 
 IDD_OPTIONS_DISPLAY DIALOGEX 0, 0, 258, 90

@@ -99,6 +99,8 @@ namespace gr::d3d11
             ID3D11DepthStencilView* depth_stencil_view, int width, int height,
             const Projection& projection);
         void finish_vr_eye();
+        void render_vr_world_laser_beam(const rf::Vector3& start,
+            const rf::Vector3& end);
         void begin_vr_hud(ID3D11RenderTargetView* render_target_view,
             int width, int height);
         void finish_vr_hud();
@@ -150,9 +152,14 @@ namespace gr::d3d11
         ID3D11DepthStencilView* vr_eye_depth_stencil_view_ = nullptr;
         int vr_eye_width_ = 0;
         int vr_eye_height_ = 0;
+        std::optional<Projection> vr_active_eye_projection_;
+        rf::Vector3 vr_active_eye_position_{};
+        rf::Matrix3 vr_active_eye_orientation_{};
         ComPtr<ID3D11Buffer> vr_mirror_vertex_buffer_;
+        ComPtr<ID3D11Buffer> vr_world_debug_vertex_buffer_;
+        bool vr_world_debug_renderer_logged_ = false;
         bool vr_mirror_logged_ = false;
-        bool vr_present_vsync_disabled_logged_ = false;
+        bool vr_present_queue_busy_logged_ = false;
     };
 
     // Non-owning access for OpenXR. The VR path always uses Alpine's existing
@@ -163,6 +170,8 @@ namespace gr::d3d11
         ID3D11DepthStencilView* depth_stencil_view, int width, int height,
         const Projection& projection);
     void finish_renderer_vr_eye();
+    void render_renderer_vr_world_laser_beam(const rf::Vector3& start,
+        const rf::Vector3& end);
     void begin_renderer_vr_hud(ID3D11RenderTargetView* render_target_view,
         int width, int height);
     void finish_renderer_vr_hud();

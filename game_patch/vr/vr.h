@@ -9,10 +9,27 @@ namespace rf
 
 namespace afvr
 {
+    enum class TimingPhase
+    {
+        input_sync,
+        begin_frame,
+        eye_image_wait,
+        eye_render,
+        eye_release,
+        hud_image_wait,
+        hud_render,
+        hud_release,
+        menu_image_wait,
+        menu_copy,
+        menu_release,
+        end_frame,
+        count,
+    };
+
     // Register -vr before Red Faction parses its command line.
     void register_command_line();
 
-    // Intercept the singleplayer portal/world traversal for stereo rendering.
+    // Intercept the local portal/world traversal for stereo rendering.
     void install_render_hook();
 
     // Register developer VR console commands after AlpineFaction has replaced
@@ -24,7 +41,8 @@ namespace afvr
     void timing_game_frame_begin();
     void timing_game_frame_end();
     void timing_note_xr_wait(double wait_ms, double return_interval_ms,
-        double runtime_target_hz);
+        double predicted_interval_ms, double runtime_target_hz);
+    void timing_note_phase(TimingPhase phase, double duration_ms);
     void timing_note_xr_submission();
     void timing_note_desktop_present(double duration_ms);
 
@@ -44,6 +62,8 @@ namespace afvr
     [[nodiscard]] bool is_requested();
     [[nodiscard]] bool is_initialized();
     [[nodiscard]] bool is_session_running();
+    [[nodiscard]] bool is_menu_capture_active();
+    [[nodiscard]] bool should_update_desktop_mirror();
 
     // Physical mouse input remains available in RF's main menu, but must not
     // affect gameplay or in-game menus while an OpenXR session is active.
@@ -72,8 +92,14 @@ namespace afvr
     [[nodiscard]] bool should_render_fpgun_texture(int bitmap_handle);
 
     // Latest calibrated weapon muzzle position plus OpenXR aim orientation in
-    // RF world space, used only by the local singleplayer fire path.
+    // RF world space, used by local fire paths.
     [[nodiscard]] bool get_weapon_muzzle_pose(rf::Vector3& position, rf::Matrix3& orientation);
+
+    // Final local projectile-creation pose. Rocket and rail projectiles use
+    // their visually calibrated laser/muzzle emitter; other weapons retain
+    // the established firing pose.
+    [[nodiscard]] bool get_weapon_launch_pose(int weapon_type,
+        rf::Vector3& position, rf::Matrix3& orientation);
 
     // Latest local right-controller grip position with the controller aim
     // orientation, used by first-person effects that must follow the hand but
@@ -82,7 +108,7 @@ namespace afvr
         rf::Matrix3& orientation);
 
     // Latest center-HMD pose in RF world space. This is cached from the XR view
-    // submission for local singleplayer launch paths that intentionally follow
+    // submission for local launch paths that intentionally follow
     // the player's six-degree look direction rather than body/stick yaw.
     [[nodiscard]] bool get_head_pose(rf::Vector3& position, rf::Matrix3& orientation);
     [[nodiscard]] bool is_primary_trigger_active();

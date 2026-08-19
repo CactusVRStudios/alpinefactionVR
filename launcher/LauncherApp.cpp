@@ -297,7 +297,7 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
     if (vr_enabled) {
         if (std::ranges::find(game_args, "-dedicated") != game_args.end()) {
             Message(hwnd,
-                "VR mode supports the Red Faction singleplayer campaign only and cannot be used with -dedicated.",
+                "VR mode cannot be used with -dedicated.",
                 "Alpine Faction VR Edition", MB_OK | MB_ICONWARNING);
             return false;
         }

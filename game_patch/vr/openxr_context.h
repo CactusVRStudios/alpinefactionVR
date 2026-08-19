@@ -15,6 +15,8 @@ namespace afvr
     {
         XrVector2f left_thumbstick{};
         XrVector2f right_thumbstick{};
+        bool left_thumbstick_click = false;
+        bool right_thumbstick_click = false;
         std::array<XrPosef, 2> grip_poses{};
         std::array<XrPosef, 2> aim_poses{};
         std::array<bool, 2> grip_pose_valid{};
@@ -24,6 +26,7 @@ namespace afvr
         bool reload = false;
         bool jump = false;
         bool crouch = false;
+        bool flashlight = false;
         bool menu = false;
     };
 
@@ -93,7 +96,7 @@ namespace afvr
         void create_reference_space();
         void create_actions();
         void create_swapchains(ID3D11Device* device);
-        void configure_display_refresh_rate();
+        void report_display_refresh_rate();
         void destroy_swapchains();
         void locate_hand_poses(XrTime time);
         void handle_session_state_changed(const XrEventDataSessionStateChanged& event);
@@ -107,14 +110,18 @@ namespace afvr
         XrActionSet gameplay_action_set_ = XR_NULL_HANDLE;
         XrAction left_thumbstick_action_ = XR_NULL_HANDLE;
         XrAction right_thumbstick_action_ = XR_NULL_HANDLE;
+        XrAction left_thumbstick_click_action_ = XR_NULL_HANDLE;
+        XrAction right_thumbstick_click_action_ = XR_NULL_HANDLE;
         XrAction grip_pose_action_ = XR_NULL_HANDLE;
         XrAction aim_pose_action_ = XR_NULL_HANDLE;
         XrAction right_trigger_action_ = XR_NULL_HANDLE;
         XrAction reload_action_ = XR_NULL_HANDLE;
         XrAction jump_action_ = XR_NULL_HANDLE;
         XrAction crouch_action_ = XR_NULL_HANDLE;
+        XrAction flashlight_action_ = XR_NULL_HANDLE;
         XrAction grip_action_ = XR_NULL_HANDLE;
         XrAction menu_action_ = XR_NULL_HANDLE;
+        XrAction index_menu_force_action_ = XR_NULL_HANDLE;
         std::array<XrPath, 2> hand_paths_{};
         XrPath touch_interaction_profile_ = XR_NULL_PATH;
         XrPath index_interaction_profile_ = XR_NULL_PATH;
@@ -127,6 +134,7 @@ namespace afvr
         bool exit_requested_ = false;
         bool display_refresh_rate_supported_ = false;
         bool frame_waited_ = false;
+        bool frame_begun_ = false;
         XrFrameState waited_frame_state_{XR_TYPE_FRAME_STATE};
         bool first_frame_logged_ = false;
         bool first_wait_frame_logged_ = false;
@@ -142,7 +150,6 @@ namespace afvr
         PFN_xrGetD3D11GraphicsRequirementsKHR get_d3d11_graphics_requirements_ = nullptr;
         PFN_xrEnumerateDisplayRefreshRatesFB enumerate_display_refresh_rates_ = nullptr;
         PFN_xrGetDisplayRefreshRateFB get_display_refresh_rate_ = nullptr;
-        PFN_xrRequestDisplayRefreshRateFB request_display_refresh_rate_ = nullptr;
 
         struct EyeSwapchain
         {

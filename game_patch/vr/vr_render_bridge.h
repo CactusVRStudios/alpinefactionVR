@@ -33,6 +33,8 @@ namespace afvr
         ID3D11DepthStencilView* depth_stencil_view, int width, int height,
         float tan_left, float tan_right, float tan_down, float tan_up);
     void finish_d3d11_eye();
+    void render_d3d11_world_laser_beam(const rf::Vector3& start,
+        const rf::Vector3& end);
     void begin_d3d11_hud(ID3D11RenderTargetView* render_target_view,
         int width, int height);
     void finish_d3d11_hud();

@@ -219,6 +219,14 @@ namespace gr::d3d11
         }
     }
 
+    void render_renderer_vr_world_laser_beam(const rf::Vector3& start,
+        const rf::Vector3& end)
+    {
+        if (renderer) {
+            renderer->render_vr_world_laser_beam(start, end);
+        }
+    }
+
     void begin_renderer_vr_hud(ID3D11RenderTargetView* render_target_view,
         int width, int height)
     {

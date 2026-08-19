@@ -9,6 +9,7 @@
 #include <cctype>
 #include <string>
 #include <unordered_set>
+#include <vector>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <xlog/xlog.h>
@@ -26,8 +27,10 @@
 #include "../rf/vmesh.h"
 #include "../rf/weapon.h"
 #include "../rf/hud.h"
+#include "../rf/level.h"
 #include "../hud/hud_internal.h"
 #include "../input/control_input_filter.h"
+#include "../input/input.h"
 #include "../misc/alpine_settings.h"
 #include "../os/console.h"
 #include "vr_render_bridge.h"
@@ -80,9 +83,18 @@ namespace afvr
         rf::Matrix3 g_weapon_render_orientation{};
         rf::Vector3 g_weapon_aim_position{};
         rf::Matrix3 g_weapon_aim_orientation{};
+        bool g_laser_emitter_pose_valid = false;
+        rf::Vector3 g_laser_emitter_position{};
+        rf::Matrix3 g_laser_emitter_orientation{};
         bool g_right_controller_pose_valid = false;
         rf::Vector3 g_right_controller_position{};
         rf::Matrix3 g_right_controller_orientation{};
+        bool g_controller_grip_world_valid = false;
+        bool g_controller_aim_world_valid = false;
+        rf::Vector3 g_controller_grip_world_position{};
+        rf::Matrix3 g_controller_grip_world_orientation{};
+        rf::Vector3 g_controller_aim_world_position{};
+        rf::Matrix3 g_controller_aim_world_orientation{};
         bool g_head_pose_valid = false;
         rf::Vector3 g_head_position{};
         rf::Matrix3 g_head_orientation{};
@@ -97,7 +109,13 @@ namespace afvr
         bool g_previous_trigger_pressed = false;
         bool g_trigger_action_logged = false;
         bool g_frame_limiter_bypassed = false;
+        bool g_multiplayer_best_effort_logged = false;
         bool g_menu_capture_active = false;
+        std::chrono::steady_clock::time_point g_next_desktop_mirror_update{};
+        int g_desktop_mirror_decision_frame = -1;
+        bool g_desktop_mirror_update_due = false;
+        bool g_singleplayer_death_menu_active = false;
+        bool g_menu_pointer_using_controller = true;
         bool g_hud_capture_active = false;
         int g_hud_rendered_frame = -1;
         bool g_menu_pointer_valid = false;
@@ -106,6 +124,8 @@ namespace afvr
         bool g_previous_reload = false;
         bool g_previous_jump = false;
         bool g_previous_crouch = false;
+        bool g_previous_holster = false;
+        bool g_previous_flashlight = false;
         bool g_previous_menu_button = false;
         bool g_previous_left_grip = false;
         bool g_previous_primary_fire = false;
@@ -119,6 +139,10 @@ namespace afvr
         bool g_jump_just_pressed = false;
         bool g_crouch_pressed = false;
         bool g_crouch_just_pressed = false;
+        bool g_holster_pressed = false;
+        bool g_holster_just_pressed = false;
+        bool g_flashlight_pressed = false;
+        bool g_flashlight_just_pressed = false;
         bool g_menu_button_pressed = false;
         bool g_menu_button_just_pressed = false;
         bool g_left_grip_pressed = false;
@@ -132,7 +156,17 @@ namespace afvr
         bool g_next_weapon_pulse = false;
         bool g_jump_semantic_logged = false;
         bool g_crouch_semantic_logged = false;
+        bool g_holster_semantic_logged = false;
+        bool g_flashlight_semantic_logged = false;
         bool g_menu_semantic_logged = false;
+        bool g_laser_sight_enabled = false;
+        bool g_previous_laser_toggle_pressed = false;
+        int g_laser_trace_frame = -1;
+        bool g_laser_trace_valid = false;
+        bool g_laser_trace_hit = false;
+        bool g_laser_coordinate_audit_logged = false;
+        rf::Vector3 g_laser_trace_start{};
+        rf::Vector3 g_laser_trace_end{};
         bool g_input_debug = false;
         rf::GameState g_last_menu_state = rf::GS_INIT;
         bool g_previous_forward = false;
@@ -155,7 +189,13 @@ namespace afvr
             double rf_frametime_ms = 0.0;
             double xr_wait_ms = 0.0;
             double xr_wait_return_interval_ms = 0.0;
+            double xr_predicted_interval_ms = 0.0;
             uint64_t xr_wait_return_intervals = 0;
+            uint64_t xr_predicted_intervals = 0;
+            static constexpr size_t phase_count =
+                static_cast<size_t>(TimingPhase::count);
+            std::array<double, phase_count> phase_ms{};
+            std::array<uint64_t, phase_count> phase_samples{};
             double desktop_present_ms = 0.0;
             double runtime_target_hz = 0.0;
 
@@ -171,7 +211,11 @@ namespace afvr
                 rf_frametime_ms = 0.0;
                 xr_wait_ms = 0.0;
                 xr_wait_return_interval_ms = 0.0;
+                xr_predicted_interval_ms = 0.0;
                 xr_wait_return_intervals = 0;
+                xr_predicted_intervals = 0;
+                phase_ms.fill(0.0);
+                phase_samples.fill(0);
                 desktop_present_ms = 0.0;
             }
         };
@@ -214,31 +258,214 @@ namespace afvr
             const double xr_return_interval_ms = g_timing.xr_wait_return_intervals > 0
                 ? g_timing.xr_wait_return_interval_ms /
                     g_timing.xr_wait_return_intervals : 0.0;
+            const double xr_predicted_interval_ms = g_timing.xr_predicted_intervals > 0
+                ? g_timing.xr_predicted_interval_ms /
+                    g_timing.xr_predicted_intervals : 0.0;
             const double present_ms = g_timing.desktop_presents > 0
                 ? g_timing.desktop_present_ms / g_timing.desktop_presents : 0.0;
+            const auto phase_average = [](TimingPhase phase) {
+                const size_t index = static_cast<size_t>(phase);
+                return g_timing.phase_samples[index] > 0
+                    ? g_timing.phase_ms[index] / g_timing.phase_samples[index]
+                    : 0.0;
+            };
 
             xlog::info(
                 "[AFVR] Timing: runtime target {:.2f} Hz; XR submissions {:.2f} fps; RF game frames {:.2f} fps",
                 g_timing.runtime_target_hz, submission_fps, game_fps);
             xlog::info(
-                "[AFVR] Timing: xrWaitFrame avg {:.3f} ms; wait-return interval {:.3f} ms; game interval {:.3f} ms",
-                xr_wait_ms, xr_return_interval_ms, game_interval_ms);
+                "[AFVR] Timing: xrWaitFrame avg {:.3f} ms; wait-return interval {:.3f} ms; predicted-time interval {:.3f} ms; game interval {:.3f} ms",
+                xr_wait_ms, xr_return_interval_ms, xr_predicted_interval_ms,
+                game_interval_ms);
             xlog::info(
                 "[AFVR] Timing: CPU frame {:.3f} ms; RF frametime {:.3f} ms; frametime_min {:.3f} ms; configured maxfps {}; desktop Present {:.3f} ms",
                 game_cpu_ms, rf_frametime_ms,
                 static_cast<double>(rf::frametime_min) * 1000.0,
                 g_alpine_game_config.max_fps, present_ms);
+            xlog::info(
+                "[AFVR] XR phases: input {:.3f} ms; begin {:.3f} ms; end {:.3f} ms",
+                phase_average(TimingPhase::input_sync),
+                phase_average(TimingPhase::begin_frame),
+                phase_average(TimingPhase::end_frame));
+            xlog::info(
+                "[AFVR] XR world per eye: image wait {:.3f} ms; render {:.3f} ms; release {:.3f} ms; HUD wait/render/release {:.3f}/{:.3f}/{:.3f} ms",
+                phase_average(TimingPhase::eye_image_wait),
+                phase_average(TimingPhase::eye_render),
+                phase_average(TimingPhase::eye_release),
+                phase_average(TimingPhase::hud_image_wait),
+                phase_average(TimingPhase::hud_render),
+                phase_average(TimingPhase::hud_release));
+            xlog::info(
+                "[AFVR] XR menu: image wait {:.3f} ms; copy {:.3f} ms; release {:.3f} ms",
+                phase_average(TimingPhase::menu_image_wait),
+                phase_average(TimingPhase::menu_copy),
+                phase_average(TimingPhase::menu_release));
             g_timing.reset(now);
         }
 
         using PortalRenderArgument = void*;
 
-        void reset_object_render_flags()
+        struct StereoRoomRenderState
+        {
+            rf::GRoom* room = nullptr;
+            rf::GRoom* render_parent = nullptr;
+            bool rendered_normal = false;
+            bool rendered_alpha = false;
+        };
+
+        struct StereoPortalRoomState
+        {
+            rf::GRoom* room = nullptr;
+            int render_depth = 0xFFFF;
+        };
+
+        constexpr int max_portal_render_rooms = 1024;
+        auto& portal_render_room_count = addr_as_ref<int>(0x009BB57C);
+        auto& portal_render_rooms =
+            addr_as_ref<rf::GRoom*[max_portal_render_rooms]>(0x009A8548);
+        std::vector<StereoPortalRoomState> g_left_eye_portal_rooms;
+
+        void make_room_object_clip_conservative(rf::GRoom* room)
+        {
+            if (!room) {
+                return;
+            }
+            room->clip_wnd = {
+                0.0f,
+                0.0f,
+                static_cast<float>(rf::gr::screen_width()),
+                static_cast<float>(rf::gr::screen_height()),
+            };
+        }
+
+        void reconcile_stereo_portal_rooms()
+        {
+            if (g_scene_render_pass == 0) {
+                g_left_eye_portal_rooms.clear();
+                g_left_eye_portal_rooms.reserve(portal_render_room_count);
+                for (int i = 0; i < portal_render_room_count; ++i) {
+                    rf::GRoom* room = portal_render_rooms[i];
+                    if (!room) {
+                        continue;
+                    }
+                    g_left_eye_portal_rooms.push_back({room, room->render_depth});
+                    // Once traversal has accepted a room, do not let its narrow
+                    // monocular portal rectangle reject meshes in only one eye.
+                    make_room_object_clip_conservative(room);
+                }
+                return;
+            }
+
+            if (g_scene_render_pass != 1) {
+                return;
+            }
+
+            int rooms_added_from_left = 0;
+            for (const StereoPortalRoomState& left_state : g_left_eye_portal_rooms) {
+                bool already_visible = false;
+                for (int i = 0; i < portal_render_room_count; ++i) {
+                    if (portal_render_rooms[i] == left_state.room) {
+                        already_visible = true;
+                        break;
+                    }
+                }
+                if (!already_visible &&
+                    portal_render_room_count < max_portal_render_rooms) {
+                    portal_render_rooms[portal_render_room_count++] = left_state.room;
+                    left_state.room->visited_this_search = true;
+                    left_state.room->render_depth = left_state.render_depth;
+                    ++rooms_added_from_left;
+                }
+            }
+
+            for (int i = 0; i < portal_render_room_count; ++i) {
+                make_room_object_clip_conservative(portal_render_rooms[i]);
+            }
+
+            static bool merge_logged = false;
+            if (rooms_added_from_left > 0 && !merge_logged) {
+                merge_logged = true;
+                xlog::info(
+                    "[AFVR] Stereo portal union added {} left-visible room(s) to the right-eye pass",
+                    rooms_added_from_left);
+            }
+        }
+
+        void reset_stereo_render_state()
         {
             // RF normally calls this once immediately before its single portal
             // traversal. A stereo frame has independent traversals, so each
             // pass needs fresh render-only visited/drawn flags as well.
             addr_as_ref<void()>(0x00488200)();
+
+            // The stock renderer refreshes room_to_render_with only when either
+            // last-frame field is older than rf::frame_count. Both OpenXR eyes
+            // deliberately render in the same game frame, so without this reset
+            // the right eye inherits the detail-room parent selected by the left
+            // eye. That makes doors and props disappear or remain black until
+            // both eyes happen to traverse the same parent room.
+            if (rf::level.geometry) {
+                for (rf::GRoom* room : rf::level.geometry->all_rooms) {
+                    if (!room) {
+                        continue;
+                    }
+                    room->room_to_render_with = nullptr;
+                    room->last_frame_rendered_normal = -1;
+                    room->last_frame_rendered_alpha = -1;
+                }
+            }
+        }
+
+        void capture_eye_room_render_state(
+            std::vector<StereoRoomRenderState>& states)
+        {
+            states.clear();
+            if (!rf::level.geometry) {
+                return;
+            }
+
+            states.reserve(rf::level.geometry->all_rooms.size());
+            for (rf::GRoom* room : rf::level.geometry->all_rooms) {
+                if (!room) {
+                    continue;
+                }
+                const bool rendered_normal =
+                    room->last_frame_rendered_normal == rf::frame_count;
+                const bool rendered_alpha =
+                    room->last_frame_rendered_alpha == rf::frame_count;
+                if (rendered_normal || rendered_alpha) {
+                    states.push_back({
+                        room, room->room_to_render_with,
+                        rendered_normal, rendered_alpha,
+                    });
+                }
+            }
+        }
+
+        void merge_eye_room_render_state(
+            const std::vector<StereoRoomRenderState>& states)
+        {
+            // Keep RF's post-render visibility state as the union of both eyes.
+            // room_to_render_with remains the right-eye choice when that room was
+            // visible there, otherwise the valid left-eye parent is restored.
+            for (const StereoRoomRenderState& state : states) {
+                rf::GRoom* room = state.room;
+                if (!room) {
+                    continue;
+                }
+                const bool rendered_in_right_eye =
+                    room->last_frame_rendered_normal == rf::frame_count ||
+                    room->last_frame_rendered_alpha == rf::frame_count;
+                if (state.rendered_normal) {
+                    room->last_frame_rendered_normal = rf::frame_count;
+                }
+                if (state.rendered_alpha) {
+                    room->last_frame_rendered_alpha = rf::frame_count;
+                }
+                if (!rendered_in_right_eye) {
+                    room->room_to_render_with = state.render_parent;
+                }
+            }
         }
 
 #ifdef AF_ENABLE_OPENXR
@@ -262,6 +489,8 @@ namespace afvr
             rf::Vector3 pivot_rotation;
             rf::Vector3 muzzle_position;
             rf::Vector3 muzzle_direction;
+            rf::Vector3 laser_position;
+            rf::Vector3 laser_rotation;
         };
 
         // RF weapon IDs are stable table indices for the stock campaign. These
@@ -271,27 +500,28 @@ namespace afvr
         // inherit their matching campaign weapon because they are not separately
         // available in the normal singleplayer weapon cycle.
         const std::array g_weapon_calibrations{
-            VrWeaponCalibration{0x00, {0.260f, 0.200f, -0.300f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // remote charge
-            VrWeaponCalibration{0x02, {-0.190f, -0.100f, -0.500f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // riot stick
-            VrWeaponCalibration{0x03, {-0.190f, 0.000f, -0.750f}, {}, {0.055f, -0.045f, 0.105f}, {}, {0.055f, -0.015f, 0.310f}, {0.0f, 0.0f, 1.0f}}, // handgun
-            VrWeaponCalibration{0x04, {-0.190f, 0.000f, -0.750f}, {}, {0.055f, -0.045f, 0.125f}, {}, {0.055f, -0.015f, 0.390f}, {0.0f, 0.0f, 1.0f}}, // undercover handgun
-            VrWeaponCalibration{0x05, {-0.190f, 0.300f, 0.600f}, {}, {0.105f, -0.085f, 0.275f}, {}, {0.105f, -0.030f, 0.980f}, {0.0f, 0.0f, 1.0f}}, // shotgun
-            VrWeaponCalibration{0x06, {-0.190f, 0.200f, -0.600f}, {}, {0.110f, -0.090f, 0.300f}, {}, {0.110f, -0.025f, 0.900f}, {0.0f, 0.0f, 1.0f}}, // sniper rifle
-            VrWeaponCalibration{0x07, {-0.090f, 0.150f, -0.250f}, {}, {0.140f, -0.105f, 0.325f}, {}, {0.230f, 0.010f, 0.950f}, {0.0f, 0.0f, 1.0f}}, // rocket launcher
-            VrWeaponCalibration{0x08, {-0.140f, 0.250f, -0.650f}, {}, {0.105f, -0.085f, 0.265f}, {}, {0.105f, -0.025f, 0.790f}, {0.0f, 0.0f, 1.0f}}, // assault rifle
-            VrWeaponCalibration{0x09, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}}, // machine pistol
-            VrWeaponCalibration{0x0A, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}}, // special machine pistol
-            VrWeaponCalibration{0x0B, {-0.390f, 0.000f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // grenade
-            VrWeaponCalibration{0x0C, {-0.090f, -1.210f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // flamethrower
-            VrWeaponCalibration{0x0D, {-0.140f, -0.050f, -0.350f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}}, // riot shield
-            VrWeaponCalibration{0x0E, {1.160f, 0.200f, 0.100f}, {}, {0.120f, -0.095f, 0.310f}, {}, {0.120f, -0.020f, 0.920f}, {0.0f, 0.0f, 1.0f}}, // rail gun
-            VrWeaponCalibration{0x0F, {-0.040f, 0.200f, -0.050f}, {}, {0.120f, -0.095f, 0.300f}, {}, {0.120f, -0.025f, 0.860f}, {0.0f, 0.0f, 1.0f}}, // heavy machine gun
-            VrWeaponCalibration{0x10, {-0.190f, 0.200f, -0.350f}, {}, {0.110f, -0.090f, 0.285f}, {}, {0.110f, -0.025f, 0.850f}, {0.0f, 0.0f, 1.0f}}, // scoped assault rifle
-            VrWeaponCalibration{0x11, {0.210f, 0.100f, -0.750f}, {}, {0.145f, -0.110f, 0.335f}, {}, {0.145f, 0.010f, 1.000f}, {0.0f, 0.0f, 1.0f}}, // shoulder cannon
+            VrWeaponCalibration{0x00, {0.260f, 0.200f, -0.300f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // remote charge (laser excluded)
+            VrWeaponCalibration{0x02, {-0.190f, -0.100f, -0.500f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // riot stick (laser excluded)
+            VrWeaponCalibration{0x03, {-0.190f, 0.030f, -0.700f}, {}, {0.055f, -0.045f, 0.105f}, {}, {0.055f, -0.015f, 0.310f}, {0.0f, 0.0f, 1.0f}, {0.295f, 0.035f, 1.045f}, {0.0f, -0.02618f, 0.0f}}, // handgun
+            VrWeaponCalibration{0x04, {-0.190f, 0.000f, -0.750f}, {}, {0.055f, -0.045f, 0.125f}, {}, {0.055f, -0.015f, 0.390f}, {0.0f, 0.0f, 1.0f}, {0.055f, -0.045f, 0.310f}, {0.0f, -0.02618f, 0.0f}}, // undercover handgun
+            VrWeaponCalibration{0x05, {-0.190f, 0.300f, 0.600f}, {}, {0.105f, -0.085f, 0.275f}, {}, {0.105f, -0.030f, 0.980f}, {0.0f, 0.0f, 1.0f}, {0.205f, -0.265f, 0.560f}, {0.0f, -0.02618f, 0.0f}}, // shotgun
+            VrWeaponCalibration{0x06, {-0.190f, 0.200f, -0.600f}, {}, {0.110f, -0.090f, 0.300f}, {}, {0.110f, -0.025f, 0.900f}, {0.0f, 0.0f, 1.0f}, {0.300f, -0.220f, 2.380f}, {0.0f, -0.02618f, 0.0f}}, // sniper rifle
+            VrWeaponCalibration{0x07, {-0.090f, 0.150f, -0.250f}, {}, {0.140f, -0.105f, 0.325f}, {}, {0.230f, 0.010f, 0.950f}, {0.0f, 0.0f, 1.0f}, {0.230f, -0.250f, 1.300f}, {0.0f, -0.02618f, 0.0f}}, // rocket launcher
+            VrWeaponCalibration{0x08, {-0.140f, 0.250f, -0.650f}, {}, {0.105f, -0.085f, 0.265f}, {}, {0.105f, -0.025f, 0.790f}, {0.0f, 0.0f, 1.0f}, {0.285f, -0.240f, 1.600f}, {0.0f, -0.02618f, 0.0f}}, // assault rifle
+            VrWeaponCalibration{0x09, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}, {0.405f, -0.270f, 1.420f}, {0.0f, -0.02618f, 0.0f}}, // machine pistol
+            VrWeaponCalibration{0x0A, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}, {0.425f, -0.210f, 1.370f}, {0.0f, -0.02618f, 0.0f}}, // special machine pistol
+            VrWeaponCalibration{0x0B, {-0.390f, 0.000f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // grenade (laser excluded)
+            VrWeaponCalibration{0x0C, {-0.090f, -1.210f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.430f}, {0.0f, -0.02618f, 0.0f}}, // flamethrower
+            VrWeaponCalibration{0x0D, {-0.140f, -0.050f, -0.350f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // riot shield (laser excluded)
+            VrWeaponCalibration{0x0E, {1.160f, 0.200f, 0.100f}, {}, {0.120f, -0.095f, 0.310f}, {}, {0.120f, -0.020f, 0.920f}, {0.0f, 0.0f, 1.0f}, {-1.120f, -0.315f, 0.700f}, {0.0f, -0.02618f, 0.0f}}, // rail gun
+            VrWeaponCalibration{0x0F, {-0.040f, 0.200f, -0.050f}, {}, {0.120f, -0.095f, 0.300f}, {}, {0.120f, -0.025f, 0.860f}, {0.0f, 0.0f, 1.0f}, {0.030f, -0.180f, 1.550f}, {0.0f, -0.02618f, 0.0f}}, // heavy machine gun
+            VrWeaponCalibration{0x10, {-0.190f, 0.200f, -0.350f}, {}, {0.110f, -0.090f, 0.285f}, {}, {0.110f, -0.025f, 0.850f}, {0.0f, 0.0f, 1.0f}, {0.290f, -0.120f, 1.750f}, {0.0f, -0.02618f, 0.0f}}, // scoped assault rifle
+            VrWeaponCalibration{0x11, {0.210f, 0.100f, -0.750f}, {}, {0.145f, -0.110f, 0.335f}, {}, {0.145f, 0.010f, 1.000f}, {0.0f, 0.0f, 1.0f}, {-0.235f, -0.040f, 3.160f}, {0.0f, -0.02618f, 0.0f}}, // shoulder cannon
         };
         const VrWeaponCalibration g_fallback_weapon_calibration{
             -1, {-0.190f, 0.000f, -0.750f}, {}, {0.080f, -0.065f, 0.200f}, {},
             {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f},
+            {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f},
         };
         std::array<bool, 64> g_weapon_calibration_logged{};
         std::array<VrWeaponCalibration, 64> g_live_weapon_calibrations{};
@@ -590,6 +820,7 @@ namespace afvr
             const auto& input = g_openxr->input_state();
             constexpr size_t left_hand = 0;
             constexpr size_t right_hand = 1;
+            g_laser_emitter_pose_valid = false;
             rf::Vector3 controller_grip_position{};
             rf::Matrix3 controller_grip_orientation{};
             g_weapon_pose_valid = input.grip_pose_valid[right_hand] &&
@@ -602,6 +833,16 @@ namespace afvr
                 transform_tracked_pose_to_world(input.aim_poses[right_hand],
                     base_position, base_orientation,
                     controller_aim_position, controller_aim_orientation);
+            g_controller_grip_world_valid = g_weapon_pose_valid;
+            g_controller_aim_world_valid = g_weapon_aim_pose_valid;
+            if (g_controller_grip_world_valid) {
+                g_controller_grip_world_position = controller_grip_position;
+                g_controller_grip_world_orientation = controller_grip_orientation;
+            }
+            if (g_controller_aim_world_valid) {
+                g_controller_aim_world_position = controller_aim_position;
+                g_controller_aim_world_orientation = controller_aim_orientation;
+            }
             g_right_controller_pose_valid = false;
             if (!g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
                 g_two_hand_support_available = false;
@@ -729,15 +970,186 @@ namespace afvr
                     0.0f,
                 }));
 
+            // The visible weapon root is authoritative. Resolve the dedicated
+            // weapon-local laser attachment only after one/two-hand blending so
+            // the beam cannot drift back to the raw controller pose.
+            g_laser_emitter_position = g_weapon_render_position +
+                transform_direction(g_weapon_render_orientation,
+                    calibration.laser_position);
+            g_laser_emitter_orientation = compose_orientation(
+                g_weapon_render_orientation,
+                euler_rotation_matrix(calibration.laser_rotation));
+            g_laser_emitter_pose_valid = true;
+
             if (g_current_weapon_id >= 0 &&
                 g_current_weapon_id < static_cast<int>(g_weapon_calibration_logged.size()) &&
                 !g_weapon_calibration_logged[g_current_weapon_id]) {
                 g_weapon_calibration_logged[g_current_weapon_id] = true;
                 xlog::info(
-                    "[AFVR] Weapon {} uses {} VR calibration; one-hand aim plus contextual left support grip, muzzle=weapon local",
+                    "[AFVR] Weapon {} uses {} VR calibration; final one/two-hand weapon root owns muzzle and laser emitter",
                     g_current_weapon_id,
                     calibration.weapon_id >= 0 ? "stock" : "fallback");
             }
+        }
+
+        bool current_weapon_supports_laser()
+        {
+            if (g_current_weapon_id < 0 ||
+                g_current_weapon_id == rf::remote_charge_weapon_type ||
+                g_current_weapon_id == rf::remote_charge_det_weapon_type ||
+                g_current_weapon_id == rf::grenade_weapon_type ||
+                g_current_weapon_id == rf::riot_shield_weapon_type) {
+                return false;
+            }
+            return !rf::weapon_is_melee(g_current_weapon_id);
+        }
+
+        void update_laser_trace()
+        {
+            g_laser_trace_frame = rf::frame_count;
+            g_laser_trace_valid = false;
+            g_laser_trace_hit = false;
+            if (!g_laser_sight_enabled || !g_laser_emitter_pose_valid ||
+                !current_weapon_supports_laser()) {
+                return;
+            }
+
+            const rf::Vector3 direction = normalized_or(
+                g_laser_emitter_orientation.fvec,
+                {0.0f, 0.0f, 1.0f});
+            g_laser_trace_start = g_laser_emitter_position;
+            g_laser_trace_end = g_laser_trace_start + direction * 1000.0f;
+
+            rf::LevelCollisionOut collision{};
+            collision.obj_handle = -1;
+            rf::Object* local_entity = nullptr;
+            if (rf::local_player) {
+                local_entity = rf::entity_from_handle(rf::local_player->entity_handle);
+            }
+            if (rf::collide_linesegment_level_for_multi(
+                    g_laser_trace_start, g_laser_trace_end,
+                    local_entity, nullptr, &collision,
+                    0.0f, true, 1.0f)) {
+                g_laser_trace_hit = true;
+                g_laser_trace_end = collision.hit_point;
+            }
+            // A valid resolved emitter owns this frame's shared world-space
+            // trace. The beam renderer rejects a degenerate sub-5 mm segment.
+            g_laser_trace_valid = true;
+
+            if (g_laser_trace_valid && !g_laser_coordinate_audit_logged) {
+                g_laser_coordinate_audit_logged = true;
+                constexpr size_t right_hand = 1;
+                const auto& input = g_openxr->input_state();
+                const auto& grip_local = input.grip_poses[right_hand];
+                const auto& aim_local = input.aim_poses[right_hand];
+                const rf::Vector3 provisional_muzzle = g_weapon_aim_position;
+                const rf::Vector3 firing_direction = normalized_or(
+                    g_weapon_aim_orientation.fvec, {0.0f, 0.0f, 1.0f});
+                const auto& calibration = weapon_calibration(g_current_weapon_id);
+                constexpr float radians_to_degrees = 57.2957795131f;
+                const rf::Vector3 laser_rotation_degrees =
+                    calibration.laser_rotation * radians_to_degrees;
+                const rf::Vector3 grip_from_head = g_head_pose_valid
+                    ? g_controller_grip_world_position - g_head_position
+                    : rf::Vector3{};
+                xlog::info("[AFVR][LASER] Coordinate audit (single diagnostic frame)");
+                xlog::info(
+                    "[AFVR][LASER] controller grip OpenXR local pos=({:.4f},{:.4f},{:.4f}) quat=({:.4f},{:.4f},{:.4f},{:.4f})",
+                    grip_local.position.x, grip_local.position.y, grip_local.position.z,
+                    grip_local.orientation.x, grip_local.orientation.y,
+                    grip_local.orientation.z, grip_local.orientation.w);
+                xlog::info(
+                    "[AFVR][LASER] controller grip RF world pos=({:.4f},{:.4f},{:.4f}) basis R=({:.4f},{:.4f},{:.4f}) U=({:.4f},{:.4f},{:.4f}) F=({:.4f},{:.4f},{:.4f})",
+                    g_controller_grip_world_position.x,
+                    g_controller_grip_world_position.y,
+                    g_controller_grip_world_position.z,
+                    g_controller_grip_world_orientation.rvec.x,
+                    g_controller_grip_world_orientation.rvec.y,
+                    g_controller_grip_world_orientation.rvec.z,
+                    g_controller_grip_world_orientation.uvec.x,
+                    g_controller_grip_world_orientation.uvec.y,
+                    g_controller_grip_world_orientation.uvec.z,
+                    g_controller_grip_world_orientation.fvec.x,
+                    g_controller_grip_world_orientation.fvec.y,
+                    g_controller_grip_world_orientation.fvec.z);
+                xlog::info(
+                    "[AFVR][LASER] controller aim OpenXR local pos=({:.4f},{:.4f},{:.4f}) quat=({:.4f},{:.4f},{:.4f},{:.4f})",
+                    aim_local.position.x, aim_local.position.y, aim_local.position.z,
+                    aim_local.orientation.x, aim_local.orientation.y,
+                    aim_local.orientation.z, aim_local.orientation.w);
+                xlog::info(
+                    "[AFVR][LASER] controller aim RF world pos=({:.4f},{:.4f},{:.4f}) basis R=({:.4f},{:.4f},{:.4f}) U=({:.4f},{:.4f},{:.4f}) F=({:.4f},{:.4f},{:.4f})",
+                    g_controller_aim_world_position.x,
+                    g_controller_aim_world_position.y,
+                    g_controller_aim_world_position.z,
+                    g_controller_aim_world_orientation.rvec.x,
+                    g_controller_aim_world_orientation.rvec.y,
+                    g_controller_aim_world_orientation.rvec.z,
+                    g_controller_aim_world_orientation.uvec.x,
+                    g_controller_aim_world_orientation.uvec.y,
+                    g_controller_aim_world_orientation.uvec.z,
+                    g_controller_aim_world_orientation.fvec.x,
+                    g_controller_aim_world_orientation.fvec.y,
+                    g_controller_aim_world_orientation.fvec.z);
+                xlog::info(
+                    "[AFVR][LASER] weapon visual root RF world pos=({:.4f},{:.4f},{:.4f}) basis R=({:.4f},{:.4f},{:.4f}) U=({:.4f},{:.4f},{:.4f}) F=({:.4f},{:.4f},{:.4f})",
+                    g_weapon_render_position.x, g_weapon_render_position.y,
+                    g_weapon_render_position.z,
+                    g_weapon_render_orientation.rvec.x,
+                    g_weapon_render_orientation.rvec.y,
+                    g_weapon_render_orientation.rvec.z,
+                    g_weapon_render_orientation.uvec.x,
+                    g_weapon_render_orientation.uvec.y,
+                    g_weapon_render_orientation.uvec.z,
+                    g_weapon_render_orientation.fvec.x,
+                    g_weapon_render_orientation.fvec.y,
+                    g_weapon_render_orientation.fvec.z);
+                xlog::info(
+                    "[AFVR][LASER] previous prototype origin (provisional calibrated muzzle) RF world=({:.4f},{:.4f},{:.4f}); existing firing direction RF world=({:.4f},{:.4f},{:.4f})",
+                    provisional_muzzle.x, provisional_muzzle.y,
+                    provisional_muzzle.z, firing_direction.x,
+                    firing_direction.y, firing_direction.z);
+                xlog::info(
+                    "[AFVR][LASER] HMD center RF world=({:.4f},{:.4f},{:.4f}); grip-minus-HMD=({:.4f},{:.4f},{:.4f}) distance={:.3f}m",
+                    g_head_position.x, g_head_position.y, g_head_position.z,
+                    grip_from_head.x, grip_from_head.y, grip_from_head.z,
+                    grip_from_head.len());
+                xlog::info(
+                    "[AFVR][LASER] weapon-local emitter pos=({:.4f},{:.4f},{:.4f}) rotation_deg=({:.2f},{:.2f},{:.2f}); resolved RF world pos=({:.4f},{:.4f},{:.4f}) direction=({:.4f},{:.4f},{:.4f})",
+                    calibration.laser_position.x,
+                    calibration.laser_position.y,
+                    calibration.laser_position.z,
+                    laser_rotation_degrees.x,
+                    laser_rotation_degrees.y,
+                    laser_rotation_degrees.z,
+                    g_laser_emitter_position.x,
+                    g_laser_emitter_position.y,
+                    g_laser_emitter_position.z,
+                    direction.x, direction.y, direction.z);
+                xlog::info(
+                    "[AFVR][LASER] shared RF world beam start=({:.4f},{:.4f},{:.4f}) direction=({:.4f},{:.4f},{:.4f}) end=({:.4f},{:.4f},{:.4f}) hit={} length={:.2f}m",
+                    g_laser_trace_start.x, g_laser_trace_start.y,
+                    g_laser_trace_start.z, direction.x, direction.y,
+                    direction.z, g_laser_trace_end.x, g_laser_trace_end.y,
+                    g_laser_trace_end.z, g_laser_trace_hit,
+                    (g_laser_trace_end - g_laser_trace_start).len());
+            }
+        }
+
+        void render_laser_sight()
+        {
+            if (g_laser_trace_frame != rf::frame_count) {
+                // Resolve one weapon-emitter world ray and reuse its exact
+                // endpoints for both eyes.
+                update_laser_trace();
+            }
+            if (!g_laser_trace_valid) {
+                return;
+            }
+
+            render_d3d11_world_laser_beam(
+                g_laser_trace_start, g_laser_trace_end);
         }
 
         float conservative_cpu_horizontal_fov(const XrFovf& fov)
@@ -764,6 +1176,25 @@ namespace afvr
             return std::copysign((std::abs(value) - deadzone) / (1.0f - deadzone), value);
         }
 
+        bool is_singleplayer_death_menu_active()
+        {
+            if (rf::is_multi) {
+                return false;
+            }
+
+            const rf::GameState state = rf::gameseq_get_state();
+            if (state == rf::GS_END_GAME) {
+                return true;
+            }
+
+            // RF can keep the interactive singleplayer death overlay inside
+            // GS_GAMEPLAY rather than transitioning to GS_GAME_OVER immediately.
+            // Wait until the player is fully dead so the preceding stereo death
+            // camera/fade remains visible as normal.
+            return state == rf::GS_GAMEPLAY && rf::local_player &&
+                rf::player_is_dead(rf::local_player);
+        }
+
         bool is_supported_vr_menu_state()
         {
             switch (rf::gameseq_get_state()) {
@@ -772,6 +1203,14 @@ namespace afvr
                 case rf::GS_SAVE_GAME_MENU:
                 case rf::GS_LOAD_GAME_MENU:
                 case rf::GS_OPTIONS_MENU:
+                case rf::GS_MULTI_MENU:
+                case rf::GS_MULTI_LEVEL_DOWNLOAD:
+                case rf::GS_MULTI_LIMBO_JUST_JOINED:
+                case rf::GS_MULTI_SERVER_LIST:
+                case rf::GS_MULTI_SPLITSCREEN:
+                case rf::GS_MULTI_CREATE_GAME:
+                case rf::GS_MULTI_GETTING_STATE_INFO:
+                case rf::GS_MULTI_LIMBO:
                 case rf::GS_HELP:
                 case rf::GS_GAME_OVER:
                 case rf::GS_MESSAGE_LOG:
@@ -811,7 +1250,7 @@ namespace afvr
             0x004AB1A0,
             [](rf::Player* player) {
 #ifdef AF_ENABLE_OPENXR
-                if (g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+                if (g_openxr && g_openxr->is_session_running() &&
                     player == rf::local_player) {
                     if (!g_rendering_weapon) {
                         if (!g_player_render_reached_logged) {
@@ -931,14 +1370,19 @@ namespace afvr
         {
             ControlInputInjection injected{};
 #ifdef AF_ENABLE_OPENXR
-            if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+            if (!g_openxr || !g_openxr->is_session_running() ||
                 !rf::local_player || controls != &rf::local_player->settings.controls ||
                 g_menu_capture_active || g_gameplay_input_blocked_until_release) {
                 return injected;
             }
 
             const char* diagnostic_name = nullptr;
-            switch (action) {
+            if (action == get_af_control(
+                    rf::AlpineControlConfigAction::AF_ACTION_FLASHLIGHT)) {
+                injected.down = injected.just_pressed = g_flashlight_just_pressed;
+                diagnostic_name = "Toggle Headlamp";
+            }
+            else switch (action) {
                 case rf::CC_ACTION_PRIMARY_ATTACK:
                     injected.down = g_primary_fire_pressed;
                     injected.just_pressed = g_primary_fire_just_pressed;
@@ -969,6 +1413,10 @@ namespace afvr
                     injected.down = g_crouch_pressed;
                     injected.just_pressed = g_crouch_just_pressed;
                     diagnostic_name = "Crouch";
+                    break;
+                case rf::CC_ACTION_HIDE_WEAPON:
+                    injected.down = injected.just_pressed = g_holster_just_pressed;
+                    diagnostic_name = "Holster Weapon";
                     break;
                 case rf::CC_ACTION_USE:
                     // Left squeeze is contextual: near a gun's support point it
@@ -1002,7 +1450,7 @@ namespace afvr
             rf::ControlConfig* controls, rf::ControlConfigAction action)
         {
 #ifdef AF_ENABLE_OPENXR
-            return g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+            return g_openxr && g_openxr->is_session_running() &&
                 rf::local_player && controls == &rf::local_player->settings.controls &&
                 !g_menu_capture_active && !g_gameplay_input_blocked_until_release &&
                 action == rf::CC_ACTION_CROUCH && g_crouch_pressed;
@@ -1017,7 +1465,16 @@ namespace afvr
             0x0051E450,
             [](int& x, int& y, int& z) {
 #ifdef AF_ENABLE_OPENXR
-                if (g_menu_capture_active && g_menu_pointer_valid) {
+                if (g_menu_capture_active &&
+                    (rf::mouse_delta_x != 0 || rf::mouse_delta_y != 0) &&
+                    !g_trigger_just_pressed) {
+                    // A real mouse movement takes ownership of the menu cursor.
+                    // A subsequent controller trigger edge switches ownership
+                    // back before RF performs its hit test.
+                    g_menu_pointer_using_controller = false;
+                }
+                if (g_menu_capture_active && g_menu_pointer_valid &&
+                    g_menu_pointer_using_controller) {
                     x = g_menu_pointer_x;
                     y = g_menu_pointer_y;
                     z = 0;
@@ -1105,7 +1562,7 @@ namespace afvr
             [](rf::Player* player) {
 #ifdef AF_ENABLE_OPENXR
                 if (g_openxr && g_openxr->is_session_running() &&
-                    !rf::is_multi && g_hud_capture_active) {
+                    g_hud_capture_active) {
                     // The normal call still provides a safe fallback on a frame
                     // where OpenXR declined rendering or had no valid views.
                     if (g_hud_rendered_frame != rf::frame_count) {
@@ -1125,12 +1582,13 @@ namespace afvr
                 PortalRenderArgument visibility, PortalRenderArgument optional_clip) {
                 bool stereo_world_rendered = false;
 #ifdef AF_ENABLE_OPENXR
-                if (g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
-                    !g_rendering_weapon) {
+                if (g_openxr && g_openxr->is_session_running() &&
+                    !g_rendering_weapon && !g_menu_capture_active) {
                     const rf::Vector3 base_eye_pos = rf::gr::eye_pos;
                     const rf::Matrix3 base_eye_matrix = rf::gr::eye_matrix;
                     const float base_horizontal_fov = addr_as_ref<float>(0x0059613C);
                     bool renderer_was_redirected = false;
+                    std::vector<StereoRoomRenderState> left_eye_room_state;
 
                     // AFVR TODO: Replace RF's shared desktop CPU frustum with a
                     // conservative stereo union if eye-edge portal culling is visible.
@@ -1187,7 +1645,7 @@ namespace afvr
                             // asymmetric OpenXR projection.
                             rf::gr::setup_3d(eye_matrix, eye_pos,
                                 conservative_cpu_horizontal_fov(eye.view.fov), true, true);
-                            reset_object_render_flags();
+                            reset_stereo_render_state();
 
                             begin_d3d11_eye(
                                 eye.render_target_view, eye.depth_stencil_view,
@@ -1200,6 +1658,12 @@ namespace afvr
                             begin_scene_render_pass(static_cast<int>(eye.eye_index));
                             g_portal_render_hook.call_target(
                                 viewer, room, visibility, optional_clip);
+                            if (eye.eye_index == 0) {
+                                capture_eye_room_render_state(left_eye_room_state);
+                            }
+                            else if (eye.eye_index == 1) {
+                                merge_eye_room_render_state(left_eye_room_state);
+                            }
                             if (g_weapon_pose_valid && rf::local_player) {
                                 if (auto* entity = rf::entity_from_handle(
                                         rf::local_player->entity_handle);
@@ -1215,9 +1679,10 @@ namespace afvr
                                     g_weapon_render_eye = -1;
                                 }
                             }
+                            render_laser_sight();
                             end_scene_render_pass(static_cast<int>(eye.eye_index));
                             finish_d3d11_eye();
-                            if (eye.eye_index == 1) {
+                            if (eye.eye_index == 1 && should_update_desktop_mirror()) {
                                 mirror_d3d11_eye(
                                     eye.shader_resource_view, eye.width, eye.height);
                             }
@@ -1267,6 +1732,17 @@ namespace afvr
             },
         };
 
+        CallHook<void(PortalRenderArgument, PortalRenderArgument,
+            PortalRenderArgument)> g_portal_room_search_hook{
+            0x004D4635,
+            [](PortalRenderArgument solid, PortalRenderArgument room,
+                PortalRenderArgument optional_clip) {
+                g_portal_room_search_hook.call_target(
+                    solid, room, optional_clip);
+                reconcile_stereo_portal_rooms();
+            },
+        };
+
         CallHook<bool(const rf::Vector3&, float)> g_room_object_frustum_cull_hook{
             0x004D35FD,
             [](const rf::Vector3& position, float radius) {
@@ -1286,7 +1762,7 @@ namespace afvr
             [](rf::Player* player, rf::ControlInfo* controls) {
                 g_local_player_controls_hook.call_target(player, controls);
 #ifdef AF_ENABLE_OPENXR
-                if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+                if (!g_openxr || !g_openxr->is_session_running() ||
                     player != rf::local_player || !controls) {
                     return;
                 }
@@ -1379,7 +1855,7 @@ namespace afvr
         {
             // A function-local static is required: constructing RF objects from
             // DllMain/global initialization can crash dependency checks.
-            static rf::CmdLineParam param{"-vr", "Enable singleplayer OpenXR mode", false};
+            static rf::CmdLineParam param{"-vr", "Enable OpenXR VR mode", false};
             return param;
         }
 
@@ -1409,6 +1885,8 @@ namespace afvr
             constexpr float radians_to_degrees = 57.2957795131f;
             const rf::Vector3 rotation_degrees =
                 calibration.pivot_rotation * radians_to_degrees;
+            const rf::Vector3 laser_rotation_degrees =
+                calibration.laser_rotation * radians_to_degrees;
             rf::console::print("VR weapon {} live calibration:", weapon_id);
             rf::console::print("  move   {:.3f} {:.3f} {:.3f}",
                 calibration.grip_position.x, calibration.grip_position.y,
@@ -1421,8 +1899,14 @@ namespace afvr
             rf::console::print("  muzzle {:.3f} {:.3f} {:.3f}",
                 calibration.muzzle_position.x, calibration.muzzle_position.y,
                 calibration.muzzle_position.z);
+            rf::console::print("  laser  {:.3f} {:.3f} {:.3f}",
+                calibration.laser_position.x, calibration.laser_position.y,
+                calibration.laser_position.z);
+            rf::console::print("  laser rotation {:.1f} {:.1f} {:.1f} degrees",
+                laser_rotation_degrees.x, laser_rotation_degrees.y,
+                laser_rotation_degrees.z);
             xlog::info(
-                "[AFVR] CALIBRATION weapon={} move=({:.3f},{:.3f},{:.3f}) pivot=({:.3f},{:.3f},{:.3f}) rotation_deg=({:.1f},{:.1f},{:.1f}) muzzle=({:.3f},{:.3f},{:.3f})",
+                "[AFVR] CALIBRATION weapon={} move=({:.3f},{:.3f},{:.3f}) pivot=({:.3f},{:.3f},{:.3f}) rotation_deg=({:.1f},{:.1f},{:.1f}) muzzle=({:.3f},{:.3f},{:.3f}) laser=({:.3f},{:.3f},{:.3f}) laser_rotation_deg=({:.1f},{:.1f},{:.1f})",
                 weapon_id,
                 calibration.grip_position.x, calibration.grip_position.y,
                 calibration.grip_position.z,
@@ -1430,7 +1914,11 @@ namespace afvr
                 calibration.pivot_position.z,
                 rotation_degrees.x, rotation_degrees.y, rotation_degrees.z,
                 calibration.muzzle_position.x, calibration.muzzle_position.y,
-                calibration.muzzle_position.z);
+                calibration.muzzle_position.z,
+                calibration.laser_position.x, calibration.laser_position.y,
+                calibration.laser_position.z,
+                laser_rotation_degrees.x, laser_rotation_degrees.y,
+                laser_rotation_degrees.z);
         }
 
         void nudge_weapon_vector(rf::Vector3 VrWeaponCalibration::*member,
@@ -1519,6 +2007,27 @@ namespace afvr
             },
             "Move the equipped weapon's firing origin in weapon-local metres",
             "vr_muzzle_move <x|y|z> <delta>; x=right, y=up, z=forward",
+        };
+
+        ConsoleCommand2 g_vr_laser_move_cmd{
+            "vr_laser_move",
+            [](std::string axis, float delta) {
+                nudge_weapon_vector(&VrWeaponCalibration::laser_position,
+                    std::move(axis), delta);
+            },
+            "Move the equipped gun's laser emitter in weapon-local metres",
+            "vr_laser_move <x|y|z> <delta>; x=right, y=up, z=forward",
+        };
+
+        ConsoleCommand2 g_vr_laser_rotate_cmd{
+            "vr_laser_rotate",
+            [](std::string axis, float degrees) {
+                constexpr float degrees_to_radians = 0.0174532925199f;
+                nudge_weapon_vector(&VrWeaponCalibration::laser_rotation,
+                    std::move(axis), degrees * degrees_to_radians);
+            },
+            "Rotate the equipped gun's weapon-local laser emitter",
+            "vr_laser_rotate <pitch|yaw|roll> <degrees>",
         };
 
         ConsoleCommand2 g_vr_aim_yaw_cmd{
@@ -1617,6 +2126,7 @@ namespace afvr
         g_player_fpgun_render_hook.install();
         g_local_player_controls_hook.install();
         g_room_object_frustum_cull_hook.install();
+        g_portal_room_search_hook.install();
         g_portal_render_hook.install();
         g_gameplay_hud_do_frame_hook.install();
     }
@@ -1631,6 +2141,8 @@ namespace afvr
         g_vr_weapon_pivot_cmd.register_cmd();
         g_vr_weapon_rotate_cmd.register_cmd();
         g_vr_muzzle_move_cmd.register_cmd();
+        g_vr_laser_move_cmd.register_cmd();
+        g_vr_laser_rotate_cmd.register_cmd();
         g_vr_aim_yaw_cmd.register_cmd();
         g_vr_weapon_calibration_cmd.register_cmd();
         g_vr_weapon_calibration_all_cmd.register_cmd();
@@ -1670,7 +2182,7 @@ namespace afvr
     }
 
     void timing_note_xr_wait(double wait_ms, double return_interval_ms,
-        double runtime_target_hz)
+        double predicted_interval_ms, double runtime_target_hz)
     {
 #ifdef AF_ENABLE_OPENXR
         ++g_timing.xr_waits;
@@ -1679,13 +2191,32 @@ namespace afvr
             ++g_timing.xr_wait_return_intervals;
             g_timing.xr_wait_return_interval_ms += return_interval_ms;
         }
+        if (predicted_interval_ms > 0.0) {
+            ++g_timing.xr_predicted_intervals;
+            g_timing.xr_predicted_interval_ms += predicted_interval_ms;
+        }
         if (runtime_target_hz > 0.0) {
             g_timing.runtime_target_hz = runtime_target_hz;
         }
 #else
         (void)wait_ms;
         (void)return_interval_ms;
+        (void)predicted_interval_ms;
         (void)runtime_target_hz;
+#endif
+    }
+
+    void timing_note_phase(TimingPhase phase, double duration_ms)
+    {
+#ifdef AF_ENABLE_OPENXR
+        const size_t index = static_cast<size_t>(phase);
+        if (index < g_timing.phase_count) {
+            ++g_timing.phase_samples[index];
+            g_timing.phase_ms[index] += duration_ms;
+        }
+#else
+        (void)phase;
+        (void)duration_ms;
 #endif
     }
 
@@ -1726,7 +2257,7 @@ namespace afvr
         }
 
         xlog::info("[AFVR] VR mode requested");
-        xlog::info("[AFVR] Singleplayer campaign mode only; multiplayer is not supported in VR mode");
+        xlog::info("[AFVR] Client multiplayer is enabled on a best-effort basis");
 
         if (rf::is_dedicated_server) {
             xlog::warn("[AFVR] Dedicated servers are not supported in VR mode; continuing without VR");
@@ -1773,12 +2304,10 @@ namespace afvr
             delete g_openxr;
             g_openxr = nullptr;
         }
-        if (g_openxr && rf::is_multi) {
-            xlog::warn("[AFVR] Multiplayer entered while VR was active; shutting down OpenXR and continuing in flat mode");
-            delete g_openxr;
-            g_openxr = nullptr;
-            update_game_frame_limiter(false);
-            return;
+        if (g_openxr && rf::is_multi && !g_multiplayer_best_effort_logged) {
+            g_multiplayer_best_effort_logged = true;
+            xlog::warn(
+                "[AFVR] Multiplayer VR is experimental and continues without compatibility guarantees");
         }
         update_game_frame_limiter(
             g_openxr && g_openxr->is_session_running());
@@ -1786,17 +2315,40 @@ namespace afvr
             if (g_openxr->is_session_running()) {
                 (void)g_openxr->wait_frame();
             }
+            const auto input_sync_start = std::chrono::steady_clock::now();
             (void)g_openxr->sync_actions();
+            timing_note_phase(TimingPhase::input_sync,
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - input_sync_start).count());
             const rf::GameState game_state = rf::gameseq_get_state();
+            const bool menu_was_active = g_menu_capture_active;
+            g_singleplayer_death_menu_active =
+                is_singleplayer_death_menu_active();
             g_menu_capture_active = g_openxr->is_session_running() &&
-                !rf::is_multi && is_supported_vr_menu_state();
+                (g_singleplayer_death_menu_active || is_supported_vr_menu_state());
+            if (g_menu_capture_active && !menu_was_active) {
+                g_menu_pointer_using_controller = true;
+                if (g_singleplayer_death_menu_active) {
+                    xlog::info("[AFVR] Singleplayer death menu captured in the OpenXR quad");
+                }
+            }
+            if (g_menu_capture_active) {
+                // GS_GAMEPLAY normally owns a centered relative mouse. The
+                // singleplayer death overlay is an interactive 2D menu even
+                // when it has not changed game-sequence state, so release and
+                // show the cursor just as RF does for ordinary menu states.
+                if (rf::keep_mouse_centered) {
+                    rf::mouse_keep_centered_disable();
+                }
+                rf::mouse_set_visible(true);
+            }
             if (g_menu_capture_active) {
                 g_two_hand_support_available = false;
                 g_two_hand_weapon_active = false;
                 g_two_hand_weapon_id = -1;
             }
             g_hud_capture_active = g_openxr->is_session_running() &&
-                !rf::is_multi && game_state == rf::GS_GAMEPLAY &&
+                game_state == rf::GS_GAMEPLAY &&
                 !g_menu_capture_active;
             g_openxr->set_hud_active(g_hud_capture_active);
             if (g_menu_capture_active && game_state != g_last_menu_state) {
@@ -1816,23 +2368,47 @@ namespace afvr
                 input.right_trigger >= 0.55f;
             g_trigger_just_pressed =
                 trigger_pressed && !g_previous_trigger_pressed;
+            if (g_menu_capture_active && g_trigger_just_pressed) {
+                g_menu_pointer_using_controller = true;
+            }
             g_trigger_pressed = trigger_pressed;
             g_previous_trigger_pressed = trigger_pressed;
 
             g_reload_pressed = g_openxr->is_session_running() && input.reload;
             g_jump_pressed = g_openxr->is_session_running() && input.jump;
             g_crouch_pressed = g_openxr->is_session_running() && input.crouch;
+            g_holster_pressed =
+                g_openxr->is_session_running() && input.left_thumbstick_click;
+            g_flashlight_pressed =
+                g_openxr->is_session_running() && input.flashlight;
             g_menu_button_pressed = g_openxr->is_session_running() && input.menu;
+            const bool laser_toggle_pressed =
+                g_openxr->is_session_running() && input.right_thumbstick_click;
+            if (laser_toggle_pressed && !g_previous_laser_toggle_pressed) {
+                g_laser_sight_enabled = !g_laser_sight_enabled;
+                g_laser_trace_frame = -1;
+                if (g_laser_sight_enabled) {
+                    g_laser_coordinate_audit_logged = false;
+                }
+                xlog::info("[AFVR] Laser sight {} (right thumbstick click)",
+                    g_laser_sight_enabled ? "enabled" : "disabled");
+            }
+            g_previous_laser_toggle_pressed = laser_toggle_pressed;
             g_left_grip_pressed = g_openxr->is_session_running() && input.grip[0] >= 0.55f;
             g_reload_just_pressed = g_reload_pressed && !g_previous_reload;
             g_jump_just_pressed = g_jump_pressed && !g_previous_jump;
             g_crouch_just_pressed = g_crouch_pressed && !g_previous_crouch;
+            g_holster_just_pressed = g_holster_pressed && !g_previous_holster;
+            g_flashlight_just_pressed =
+                g_flashlight_pressed && !g_previous_flashlight;
             g_menu_button_just_pressed = g_menu_button_pressed &&
                 !g_previous_menu_button;
             g_left_grip_just_pressed = g_left_grip_pressed && !g_previous_left_grip;
             g_previous_reload = g_reload_pressed;
             g_previous_jump = g_jump_pressed;
             g_previous_crouch = g_crouch_pressed;
+            g_previous_holster = g_holster_pressed;
+            g_previous_flashlight = g_flashlight_pressed;
             g_previous_menu_button = g_menu_button_pressed;
             g_previous_left_grip = g_left_grip_pressed;
 
@@ -1845,7 +2421,15 @@ namespace afvr
             }
             if (g_crouch_just_pressed && !g_crouch_semantic_logged) {
                 g_crouch_semantic_logged = true;
-                xlog::info("[AFVR] OpenXR crouch action received (left face button)");
+                xlog::info("[AFVR] OpenXR crouch action received (right A)");
+            }
+            if (g_holster_just_pressed && !g_holster_semantic_logged) {
+                g_holster_semantic_logged = true;
+                xlog::info("[AFVR] OpenXR holster action received (left thumbstick click)");
+            }
+            if (g_flashlight_just_pressed && !g_flashlight_semantic_logged) {
+                g_flashlight_semantic_logged = true;
+                xlog::info("[AFVR] OpenXR flashlight action received (left secondary face button)");
             }
             if (g_menu_button_just_pressed && !g_menu_semantic_logged) {
                 g_menu_semantic_logged = true;
@@ -1860,6 +2444,7 @@ namespace afvr
             else if (g_gameplay_input_blocked_until_release &&
                 !trigger_pressed && !right_grip_pressed && !g_left_grip_pressed &&
                 !g_reload_pressed && !g_jump_pressed && !g_crouch_pressed &&
+                !g_holster_pressed && !g_flashlight_pressed &&
                 std::abs(input.right_thumbstick.y) <= 0.35f) {
                 g_gameplay_input_blocked_until_release = false;
             }
@@ -1970,10 +2555,19 @@ namespace afvr
         g_rendering_fpgun_body = false;
         g_weapon_pose_valid = false;
         g_weapon_aim_pose_valid = false;
+        g_laser_emitter_pose_valid = false;
+        g_laser_emitter_position = {};
+        g_laser_emitter_orientation = {};
         g_two_hand_support_available = false;
         g_two_hand_weapon_active = false;
         g_two_hand_weapon_id = -1;
         g_right_controller_pose_valid = false;
+        g_controller_grip_world_valid = false;
+        g_controller_aim_world_valid = false;
+        g_controller_grip_world_position = {};
+        g_controller_grip_world_orientation = {};
+        g_controller_aim_world_position = {};
+        g_controller_aim_world_orientation = {};
         g_head_pose_valid = false;
         g_current_weapon_id = -1;
         g_debug_weapon_at_hmd = false;
@@ -1989,13 +2583,21 @@ namespace afvr
         g_previous_trigger_pressed = false;
         g_trigger_action_logged = false;
         g_frame_limiter_bypassed = false;
+        g_multiplayer_best_effort_logged = false;
         g_menu_capture_active = false;
+        g_next_desktop_mirror_update = {};
+        g_desktop_mirror_decision_frame = -1;
+        g_desktop_mirror_update_due = false;
+        g_singleplayer_death_menu_active = false;
+        g_menu_pointer_using_controller = true;
         g_hud_capture_active = false;
         g_hud_rendered_frame = -1;
         g_menu_pointer_valid = false;
         g_previous_reload = false;
         g_previous_jump = false;
         g_previous_crouch = false;
+        g_previous_holster = false;
+        g_previous_flashlight = false;
         g_previous_menu_button = false;
         g_previous_left_grip = false;
         g_previous_primary_fire = false;
@@ -2009,6 +2611,10 @@ namespace afvr
         g_jump_just_pressed = false;
         g_crouch_pressed = false;
         g_crouch_just_pressed = false;
+        g_holster_pressed = false;
+        g_holster_just_pressed = false;
+        g_flashlight_pressed = false;
+        g_flashlight_just_pressed = false;
         g_menu_button_pressed = false;
         g_menu_button_just_pressed = false;
         g_left_grip_pressed = false;
@@ -2022,7 +2628,17 @@ namespace afvr
         g_next_weapon_pulse = false;
         g_jump_semantic_logged = false;
         g_crouch_semantic_logged = false;
+        g_holster_semantic_logged = false;
+        g_flashlight_semantic_logged = false;
         g_menu_semantic_logged = false;
+        g_laser_sight_enabled = false;
+        g_previous_laser_toggle_pressed = false;
+        g_laser_trace_frame = -1;
+        g_laser_trace_valid = false;
+        g_laser_trace_hit = false;
+        g_laser_coordinate_audit_logged = false;
+        g_laser_trace_start = {};
+        g_laser_trace_end = {};
         g_previous_forward = false;
         g_previous_backward = false;
         g_previous_strafe_left = false;
@@ -2056,10 +2672,47 @@ namespace afvr
 #endif
     }
 
+    bool is_menu_capture_active()
+    {
+#ifdef AF_ENABLE_OPENXR
+        return g_openxr && g_openxr->is_session_running() && g_menu_capture_active;
+#else
+        return false;
+#endif
+    }
+
+    bool should_update_desktop_mirror()
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running()) {
+            return false;
+        }
+        if (g_desktop_mirror_decision_frame == rf::frame_count) {
+            return g_desktop_mirror_update_due;
+        }
+
+        g_desktop_mirror_decision_frame = rf::frame_count;
+        const auto now = std::chrono::steady_clock::now();
+        g_desktop_mirror_update_due =
+            g_next_desktop_mirror_update == std::chrono::steady_clock::time_point{} ||
+            now >= g_next_desktop_mirror_update;
+        if (g_desktop_mirror_update_due) {
+            // Never catch up missed desktop frames. About 30 Hz is sufficient
+            // for the console and spectator validation while preserving GPU
+            // headroom for the runtime-paced headset submission.
+            g_next_desktop_mirror_update = now + std::chrono::milliseconds(33);
+        }
+        return g_desktop_mirror_update_due;
+#else
+        return false;
+#endif
+    }
+
     bool should_block_physical_mouse_input()
     {
 #ifdef AF_ENABLE_OPENXR
-        return g_openxr && g_openxr->is_session_running() && !rf::is_multi &&
+        return g_openxr && g_openxr->is_session_running() &&
+            !g_menu_capture_active &&
             rf::gameseq_get_state() != rf::GS_MAIN_MENU;
 #else
         return false;
@@ -2196,7 +2849,7 @@ namespace afvr
     bool get_weapon_muzzle_pose(rf::Vector3& position, rf::Matrix3& orientation)
     {
 #ifdef AF_ENABLE_OPENXR
-        if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+        if (!g_openxr || !g_openxr->is_session_running() ||
             !g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
             return false;
         }
@@ -2210,10 +2863,37 @@ namespace afvr
 #endif
     }
 
+    bool get_weapon_launch_pose(int weapon_type, rf::Vector3& position,
+        rf::Matrix3& orientation)
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running() ||
+            !g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
+            return false;
+        }
+        const bool use_visual_muzzle_emitter =
+            weapon_type == rf::rocket_launcher_weapon_type ||
+            weapon_type == rf::rail_gun_weapon_type;
+        if (use_visual_muzzle_emitter && g_laser_emitter_pose_valid) {
+            position = g_laser_emitter_position;
+            orientation = g_laser_emitter_orientation;
+            return true;
+        }
+        position = g_weapon_aim_position;
+        orientation = g_weapon_aim_orientation;
+        return true;
+#else
+        (void)weapon_type;
+        (void)position;
+        (void)orientation;
+        return false;
+#endif
+    }
+
     bool get_head_pose(rf::Vector3& position, rf::Matrix3& orientation)
     {
 #ifdef AF_ENABLE_OPENXR
-        if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+        if (!g_openxr || !g_openxr->is_session_running() ||
             !g_head_pose_valid) {
             return false;
         }
@@ -2231,7 +2911,7 @@ namespace afvr
         rf::Matrix3& orientation)
     {
 #ifdef AF_ENABLE_OPENXR
-        if (!g_openxr || !g_openxr->is_session_running() || rf::is_multi ||
+        if (!g_openxr || !g_openxr->is_session_running() ||
             !g_right_controller_pose_valid) {
             return false;
         }
