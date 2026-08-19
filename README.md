@@ -35,6 +35,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 ### Oculus Touch controls
 
 - **Left thumbstick:** Move
+- **Ladders:** Look up/down and push the left thumbstick forward to climb
 - **Left thumbstick press:** Holster weapon
 - **Left X:** Reload
 - **Left Y:** Toggle flashlight/headlight
@@ -57,6 +58,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 ### Valve Index Knuckles controls
 
 - **Left thumbstick:** Move
+- **Ladders:** Look up/down and push the left thumbstick forward to climb
 - **Left thumbstick press:** Holster weapon
 - **Left A:** Reload
 - **Left B:** Toggle flashlight/headlight

@@ -65,7 +65,9 @@ namespace afvr
         bool g_scene_render_stats_logged = false;
         uint32_t g_scene_render_diagnostic_frames = 0;
         float g_hmd_relative_yaw = 0.0f;
+        float g_hmd_relative_forward_y = 0.0f;
         bool g_movement_input_logged = false;
+        bool g_ladder_input_logged = false;
         bool g_snap_turn_logged = false;
         bool g_smooth_turn_logged = false;
         bool g_snap_turn_latched = false;
@@ -1611,6 +1613,8 @@ namespace afvr
                             g_hmd_relative_yaw = std::atan2(
                                 relative_rf_orientation.fvec.x,
                                 relative_rf_orientation.fvec.z);
+                            g_hmd_relative_forward_y =
+                                std::clamp(relative_rf_orientation.fvec.y, -1.0f, 1.0f);
 
                             rf::Vector3 eye_pos = base_eye_pos +
                                 transform_direction(base_eye_matrix, relative_rf_position);
@@ -1770,6 +1774,13 @@ namespace afvr
                 const auto& input = g_openxr->input_state();
                 const float stick_x = apply_stick_deadzone(input.left_thumbstick.x);
                 const float stick_y = apply_stick_deadzone(input.left_thumbstick.y);
+                auto* entity = rf::entity_from_handle(player->entity_handle);
+                const bool ladder_movement = entity && g_head_pose_valid &&
+                    (entity->current_climb_region || rf::entity_is_climbing(entity));
+                const float head_forward_horizontal = ladder_movement
+                    ? std::sqrt(std::max(0.0f,
+                        1.0f - g_hmd_relative_forward_y * g_hmd_relative_forward_y))
+                    : 1.0f;
                 const bool forward = stick_y > 0.0f;
                 const bool backward = stick_y < 0.0f;
                 const bool strafe_left = stick_x < 0.0f;
@@ -1784,13 +1795,38 @@ namespace afvr
                 g_previous_strafe_right = strafe_right;
                 const float yaw_sin = std::sin(g_hmd_relative_yaw);
                 const float yaw_cos = std::cos(g_hmd_relative_yaw);
-                controls->move.x += stick_x * yaw_cos + stick_y * yaw_sin;
-                controls->move.z += stick_y * yaw_cos - stick_x * yaw_sin;
-                const float horizontal_length = std::sqrt(
-                    controls->move.x * controls->move.x + controls->move.z * controls->move.z);
-                if (horizontal_length > 1.0f) {
-                    controls->move.x /= horizontal_length;
-                    controls->move.z /= horizontal_length;
+                controls->move.x += stick_x * yaw_cos +
+                    stick_y * yaw_sin * head_forward_horizontal;
+                controls->move.z += stick_y * yaw_cos * head_forward_horizontal -
+                    stick_x * yaw_sin;
+                if (ladder_movement) {
+                    controls->move.y += stick_y * g_hmd_relative_forward_y;
+                    if (!g_ladder_input_logged && std::abs(stick_y) > 0.0f &&
+                        std::abs(g_hmd_relative_forward_y) > 0.05f) {
+                        g_ladder_input_logged = true;
+                        xlog::info(
+                            "[AFVR] Ladder movement follows tracked HMD pitch");
+                    }
+                }
+                if (ladder_movement) {
+                    const float movement_length = std::sqrt(
+                        controls->move.x * controls->move.x +
+                        controls->move.y * controls->move.y +
+                        controls->move.z * controls->move.z);
+                    if (movement_length > 1.0f) {
+                        controls->move.x /= movement_length;
+                        controls->move.y /= movement_length;
+                        controls->move.z /= movement_length;
+                    }
+                }
+                else {
+                    const float horizontal_length = std::sqrt(
+                        controls->move.x * controls->move.x +
+                        controls->move.z * controls->move.z);
+                    if (horizontal_length > 1.0f) {
+                        controls->move.x /= horizontal_length;
+                        controls->move.z /= horizontal_length;
+                    }
                 }
                 if (!g_movement_input_logged &&
                     (std::abs(stick_x) > 0.0f || std::abs(stick_y) > 0.0f)) {
@@ -1804,7 +1840,7 @@ namespace afvr
                         std::abs(input.right_thumbstick.x) + 0.1f;
                 const float turn_x = cycle_axis_dominant
                     ? 0.0f : input.right_thumbstick.x;
-                if (auto* entity = rf::entity_from_handle(player->entity_handle)) {
+                if (entity) {
                     constexpr float pi = 3.14159265359f;
                     constexpr float degrees_to_radians = pi / 180.0f;
                     if (g_game_config.vr_turn_mode == GameConfig::VrTurnMode::smooth) {
@@ -2547,7 +2583,9 @@ namespace afvr
         g_recenter_requested = true;
         g_head_rotation_logged = false;
         g_hmd_relative_yaw = 0.0f;
+        g_hmd_relative_forward_y = 0.0f;
         g_movement_input_logged = false;
+        g_ladder_input_logged = false;
         g_snap_turn_logged = false;
         g_smooth_turn_logged = false;
         g_snap_turn_latched = false;
