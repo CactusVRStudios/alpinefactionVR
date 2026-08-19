@@ -98,6 +98,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 
 - Physical HMD movement uses Red Faction's native swept-sphere world collision with a 16 cm head volume, including ordinary walls, invisible collision faces, and mover geometry.
 - When room-scale movement reaches a wall, the complete tracked rig—both eyes, hands, weapon, muzzle, and laser—is pushed back to the last safe position.
+- Smooth and snap turns pivot around the HMD's current physical room position. Walking away from the last calibration point no longer makes thumbstick turning orbit that old center.
 - Turrets and vehicles keep their mounted movement rules and do not receive the on-foot room-scale collision correction.
 - Opening or closing a VR menu automatically recalibrates tracking yaw, physical height, and the room-scale origin from the current HMD pose.
 
@@ -121,7 +122,7 @@ The pinned Khronos OpenXR SDK is fetched during configuration, and the 32-bit lo
 After building the OpenXR-enabled Release configuration, create both supported release artifacts with:
 
 ```powershell
-.\tools\make-vr-release.ps1 -Version "alpha-0.5" -BuildDir ".\build-afvr\bin\Release"
+.\tools\make-vr-release.ps1 -Version "alpha-0.6" -BuildDir ".\build-afvr\bin\Release"
 ```
 
 The script always creates a basic ZIP and, when Inno Setup 6 and the patch payload in `setup/patches/output` are available, a one-step installer. Use `-SkipInstaller` when only the ZIP is needed.

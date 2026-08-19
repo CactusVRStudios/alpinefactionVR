@@ -499,8 +499,13 @@ namespace afvr
         };
 
         TrackingOrigin g_tracking_origin;
+        XrVector3f g_latest_center_tracking_position{};
+        bool g_latest_center_tracking_position_valid = false;
+        rf::Matrix3 g_latest_player_view_base{};
+        bool g_latest_player_view_base_valid = false;
         bool g_recenter_requested = true;
         bool g_head_rotation_logged = false;
+        bool g_turn_pivot_rebase_logged = false;
 
         struct VrWeaponCalibration
         {
@@ -823,6 +828,8 @@ namespace afvr
             g_tracking_origin.position = hmd_pose.position;
             g_tracking_origin.yaw = std::atan2(
                 hmd_orientation.fvec.x, hmd_orientation.fvec.z);
+            g_latest_center_tracking_position = hmd_pose.position;
+            g_latest_center_tracking_position_valid = true;
             g_recenter_requested = false;
             g_roomscale_world_correction = {};
             g_roomscale_collision_frame = -1;
@@ -841,6 +848,58 @@ namespace afvr
                 -(position.z - g_tracking_origin.position.z),
             };
             return transform_direction(tracking_yaw_neutralizer(), converted_delta);
+        }
+
+        void rebase_tracking_origin_for_body_turn(float yaw_delta)
+        {
+            if (!g_tracking_origin.valid ||
+                !g_latest_center_tracking_position_valid ||
+                std::abs(yaw_delta) < 0.000001f) {
+                return;
+            }
+
+            // Artificial yaw must pivot around the player's current physical
+            // HMD position, not the stage-space point captured at recenter.
+            // Counter-rotate the current room-scale offset in player space,
+            // then express that new offset by translating the tracking origin.
+            // All tracked poses use this origin, so the eyes and both hands
+            // remain a rigid rig while the virtual body turns beneath them.
+            rf::Vector3 current_head_offset =
+                relative_tracking_position(g_latest_center_tracking_position);
+            if (g_latest_player_view_base_valid) {
+                // If room-scale collision has already pushed the rendered rig
+                // to a safe location, pivot around that visible head position
+                // rather than the unavailable physical point beyond the wall.
+                current_head_offset += {
+                    g_latest_player_view_base.rvec.dot_prod(
+                        g_roomscale_world_correction),
+                    g_latest_player_view_base.uvec.dot_prod(
+                        g_roomscale_world_correction),
+                    g_latest_player_view_base.fvec.dot_prod(
+                        g_roomscale_world_correction),
+                };
+            }
+            const rf::Vector3 rebased_head_offset = transform_direction(
+                euler_rotation_matrix({0.0f, -yaw_delta, 0.0f}),
+                current_head_offset);
+            const rf::Vector3 converted_offset = transform_direction(
+                euler_rotation_matrix({0.0f, g_tracking_origin.yaw, 0.0f}),
+                rebased_head_offset);
+
+            g_tracking_origin.position.x =
+                g_latest_center_tracking_position.x - converted_offset.x;
+            g_tracking_origin.position.y =
+                g_latest_center_tracking_position.y - converted_offset.y;
+            g_tracking_origin.position.z =
+                g_latest_center_tracking_position.z + converted_offset.z;
+            g_roomscale_world_correction = {};
+            g_roomscale_collision_frame = -1;
+
+            if (!g_turn_pivot_rebase_logged) {
+                g_turn_pivot_rebase_logged = true;
+                xlog::info(
+                    "[AFVR] Artificial turning now pivots around the current physical HMD position");
+            }
         }
 
         rf::Matrix3 relative_tracking_orientation(const XrQuaternionf& orientation)
@@ -1790,6 +1849,9 @@ namespace afvr
                     // conservative stereo union if eye-edge portal culling is visible.
                     const bool frame_submitted =
                         g_openxr->render_frame([&](const OpenXrEyeRenderInfo& eye) {
+                            g_latest_center_tracking_position =
+                                eye.center_pose.position;
+                            g_latest_center_tracking_position_valid = true;
                             if (!g_tracking_origin.valid || g_recenter_requested) {
                                 capture_tracking_origin(eye.center_pose);
                             }
@@ -1814,6 +1876,8 @@ namespace afvr
 
                             const rf::Matrix3 vr_view_base =
                                 mounted_vr_view_base(base_eye_matrix);
+                            g_latest_player_view_base = vr_view_base;
+                            g_latest_player_view_base_valid = true;
                             const rf::Vector3 relative_center_position =
                                 relative_tracking_position(
                                     eye.center_pose.position);
@@ -2135,9 +2199,11 @@ namespace afvr
                     constexpr float degrees_to_radians = pi / 180.0f;
                     if (g_game_config.vr_turn_mode == GameConfig::VrTurnMode::smooth) {
                         const float smooth_x = apply_stick_deadzone(turn_x);
-                        entity->control_data.phb.y += smooth_x *
+                        const float yaw_delta = smooth_x *
                             static_cast<float>(g_game_config.vr_smooth_turn_degrees_per_second.value()) *
                             degrees_to_radians * rf::frametime;
+                        rebase_tracking_origin_for_body_turn(yaw_delta);
+                        entity->control_data.phb.y += yaw_delta;
                         if (entity->control_data.phb.y > pi) {
                             entity->control_data.phb.y -= 2.0f * pi;
                         }
@@ -2155,7 +2221,10 @@ namespace afvr
                         const float snap_radians =
                             static_cast<float>(g_game_config.vr_snap_turn_degrees.value()) *
                             degrees_to_radians;
-                        entity->control_data.phb.y += std::copysign(snap_radians, turn_x);
+                        const float yaw_delta =
+                            std::copysign(snap_radians, turn_x);
+                        rebase_tracking_origin_for_body_turn(yaw_delta);
+                        entity->control_data.phb.y += yaw_delta;
                         if (entity->control_data.phb.y > pi) {
                             entity->control_data.phb.y -= 2.0f * pi;
                         }
@@ -2621,6 +2690,8 @@ namespace afvr
 #ifdef AF_ENABLE_OPENXR
         if (g_openxr && !g_openxr->is_session_running()) {
             g_tracking_origin.valid = false;
+            g_latest_center_tracking_position_valid = false;
+            g_latest_player_view_base_valid = false;
             g_recenter_requested = true;
             g_head_rotation_logged = false;
             g_head_pose_valid = false;
@@ -2891,6 +2962,8 @@ namespace afvr
         }
         static bool copy_failure_logged = false;
         (void)g_openxr->render_menu_frame([&](const OpenXrMenuRenderInfo& menu) {
+            g_latest_center_tracking_position = menu.center_pose.position;
+            g_latest_center_tracking_position_valid = true;
             if (!g_tracking_origin.valid || g_recenter_requested) {
                 capture_tracking_origin(menu.center_pose);
                 g_roomscale_world_correction = {};
@@ -2963,6 +3036,8 @@ namespace afvr
         g_controller_aim_world_position = {};
         g_controller_aim_world_orientation = {};
         g_head_pose_valid = false;
+        g_latest_center_tracking_position_valid = false;
+        g_latest_player_view_base_valid = false;
         g_current_weapon_id = -1;
         g_debug_weapon_at_hmd = false;
         g_weapon_render_eye = -1;
@@ -2984,6 +3059,7 @@ namespace afvr
         g_roomscale_world_correction = {};
         g_roomscale_collision_frame = -1;
         g_roomscale_collision_logged = false;
+        g_turn_pivot_rebase_logged = false;
         g_next_desktop_mirror_update = {};
         g_desktop_mirror_decision_frame = -1;
         g_desktop_mirror_update_due = false;
