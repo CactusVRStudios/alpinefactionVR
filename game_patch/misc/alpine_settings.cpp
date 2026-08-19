@@ -1755,7 +1755,11 @@ CallHook<void(rf::Player*)> player_settings_save_quit_hook{
         if (g_restart_on_close) {
             xlog::info("Restarting Alpine Faction to finish applying imported settings.");
             std::string af_install_dir = get_module_dir(g_hmodule);
+#ifdef AF_ENABLE_OPENXR
+            std::string af_launcher_filename = "AlpineFactionVR.exe";
+#else
             std::string af_launcher_filename = "AlpineFactionLauncher.exe";
+#endif
             std::string af_launcher_arguments = " -game";
 
             if (rf::mod_param.found()) {

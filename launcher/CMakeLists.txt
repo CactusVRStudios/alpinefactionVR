@@ -42,6 +42,11 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 
 add_executable(AlpineFactionLauncher WIN32 ${SRCS})
 
+if(AF_ENABLE_OPENXR)
+    set_target_properties(AlpineFactionLauncher PROPERTIES OUTPUT_NAME AlpineFactionVR)
+    target_compile_definitions(AlpineFactionLauncher PRIVATE AF_ENABLE_OPENXR=1)
+endif()
+
 target_compile_features(AlpineFactionLauncher PUBLIC cxx_std_20)
 set_target_properties(AlpineFactionLauncher PROPERTIES CXX_EXTENSIONS NO)
 enable_warnings(AlpineFactionLauncher)

@@ -1,23 +1,46 @@
 ; Preprocessor variables
 #define SrcRootDir ".."
+#ifndef BinDir
 #define BinDir "..\build\Release\bin"
+#endif
+#ifndef PatchToolDir
+#define PatchToolDir BinDir
+#endif
 #define PatchesDir "patches\output"
+#ifndef AppVer
 #define AppVer "1.4.0_Lupin"
+#endif
+
+#ifdef VRBuild
+#define ProductName "Alpine Faction VR"
+#define ProductPublisher "Cactus VR Studios"
+#define ProductId "{{A46D17C3-68AC-4B8E-91C9-578F4EB53C3A}"
+#define ProductExeName "AlpineFactionVR-" + AppVer + "-setup"
+#define LauncherExeName "AlpineFactionVR.exe"
+#define InstallDirName "Alpine Faction VR"
+#else
+#define ProductName "Alpine Faction"
+#define ProductPublisher "Goober"
+#define ProductId "{{005AA7-D71920-FFC72C-4B6E-82D3-9F7B12A3C8D1}"
+#define ProductExeName "AlpineFaction-" + AppVer + "-setup"
+#define LauncherExeName "AlpineFactionLauncher.exe"
+#define InstallDirName "Alpine Faction"
+#endif
 
 [Setup]
-AppId={{005AA7-D71920-FFC72C-4B6E-82D3-9F7B12A3C8D1}}
-AppName=Alpine Faction
+AppId={#ProductId}
+AppName={#ProductName}
 AppVersion={#AppVer}
-AppPublisher=Goober
+AppPublisher={#ProductPublisher}
 AppPublisherURL=https://factionfiles.com/
 AppSupportURL=https://alpinefaction.com/help/
 AppUpdatesURL=https://alpinefaction.com/
-UninstallDisplayName=Alpine Faction
-UninstallDisplayIcon={app}\AlpineFactionLauncher.exe
-DefaultDirName={autopf}\Alpine Faction
-DefaultGroupName=Alpine Faction
+UninstallDisplayName={#ProductName}
+UninstallDisplayIcon={app}\{#LauncherExeName}
+DefaultDirName={autopf}\{#InstallDirName}
+DefaultGroupName={#ProductName}
 DisableWelcomePage=no
-OutputBaseFilename=AlpineFaction-{#AppVer}-setup
+OutputBaseFilename={#ProductExeName}
 Compression=lzma2/max
 SolidCompression=yes
 OutputDir=build
@@ -26,6 +49,10 @@ SetupLogging=yes
 ChangesAssociations=yes
 AllowNoIcons=yes
 WizardStyle=modern
+#ifdef VRBuild
+WizardImageFile=assets\vr-wizard.bmp
+WizardSmallImageFile=assets\vr-small.bmp
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -34,7 +61,7 @@ Name: "rflassoc"; Description: "Associate the .rfl file extension with the Alpin
 Name: "redvisualstyles"; Description: "Enable Windows visual styles for the level editor (experimental)"; GroupDescription: "Other options:"; Flags: unchecked
 
 [Files]
-Source: "{#BinDir}\AlpineFactionLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\{#LauncherExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\CrashHandler.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\AlpineEditor.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\AlpineFaction.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -42,6 +69,10 @@ Source: "{#BinDir}\d3d8to9.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\alpinefaction.vpp"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\licensing-info.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRootDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef VRBuild
+Source: "assets\installer-music.wav"; Flags: dontcopy
+Source: "{#SrcRootDir}\README.md"; DestDir: "{app}"; DestName: "README-VR.md"; Flags: ignoreversion
+#endif
 Source: "{#SrcRootDir}\resources\RED.exe.manifest"; DestDir: "{code:GetGameDir}"; Flags: ignoreversion; Tasks: redvisualstyles
 ; RTPatch patches (extracted from official 1.20 patches)
 Source: "{#PatchesDir}\patchw32.dll"; Flags: dontcopy
@@ -49,7 +80,7 @@ Source: "{#PatchesDir}\rf120_na.rtp"; Flags: dontcopy
 Source: "{#PatchesDir}\rf120_gr.rtp"; Flags: dontcopy
 Source: "{#PatchesDir}\rf120_fr.rtp"; Flags: dontcopy
 ; minibsdiff patches (converts existing files to ones compatible with 1.20 version)
-Source: "{#BinDir}\minibsdiff.exe"; Flags: dontcopy
+Source: "{#PatchToolDir}\minibsdiff.exe"; Flags: dontcopy
 Source: "{#PatchesDir}\RF-1.20-gr.exe.mbsdiff"; Flags: dontcopy
 Source: "{#PatchesDir}\RF-1.20-fr.exe.mbsdiff"; Flags: dontcopy
 Source: "{#PatchesDir}\RF-1.21.exe.mbsdiff"; Flags: dontcopy
@@ -68,29 +99,29 @@ Name: "{code:GetGameDir}\screenshots"; Permissions: users-modify
 Name: "{code:GetGameDir}\logs"; Permissions: users-modify
 
 [Icons]
-Name: "{group}\Alpine Faction"; Filename: "{app}\AlpineFactionLauncher.exe"
-Name: "{autodesktop}\Alpine Faction"; Filename: "{app}\AlpineFactionLauncher.exe"; Tasks: desktopicon
+Name: "{group}\{#ProductName}"; Filename: "{app}\{#LauncherExeName}"
+Name: "{autodesktop}\{#ProductName}"; Filename: "{app}\{#LauncherExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\AlpineFactionLauncher.exe"; Description: "{cm:LaunchProgram,Alpine Faction}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#LauncherExeName}"; Description: "{cm:LaunchProgram,{#ProductName}}"; Flags: nowait postinstall skipifsilent
 Filename: "REG"; Parameters: "ADD ""HKCU\Software\Volition\Red Faction\Alpine Faction"" /v ""Executable Path"" /d ""{code:GetFinalGameExePath}"" /f"; Flags: runhidden runasoriginaluser
 
 [Registry]
 ; rf:// protocol
 Root: HKCR; Subkey: "rf"; ValueType: "string"; ValueData: "URL:Red Faction Protocol"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "rf"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCR; Subkey: "rf\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"
-Root: HKCR; Subkey: "rf\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -game -url %1"
+Root: HKCR; Subkey: "rf\DefaultIcon"; ValueType: "string"; ValueData: "{app}\{#LauncherExeName},0"
+Root: HKCR; Subkey: "rf\shell\open\command"; ValueType: "string"; ValueData: """{app}\{#LauncherExeName}"" -game -url %1"
 ; af:// protocol
 Root: HKCR; Subkey: "af"; ValueType: "string"; ValueData: "URL:Red Faction Protocol"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "af"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCR; Subkey: "af\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"
-Root: HKCR; Subkey: "af\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -aflink %1"
+Root: HKCR; Subkey: "af\DefaultIcon"; ValueType: "string"; ValueData: "{app}\{#LauncherExeName},0"
+Root: HKCR; Subkey: "af\shell\open\command"; ValueType: "string"; ValueData: """{app}\{#LauncherExeName}"" -aflink %1"
 ; rfl file extension association
 Root: HKCR; Subkey: ".rfl"; ValueType: "string"; ValueData: "AlpineFactionLevelEditor"; Flags: uninsdeletekey; Tasks: rflassoc
 Root: HKCR; Subkey: "AlpineFactionLevelEditor"; ValueType: "string"; ValueData: "Alpine Faction Level Editor"; Flags: uninsdeletekey; Tasks: rflassoc
 ;Root: HKCR; Subkey: "AlpineFactionLevelEditor\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"; Tasks: rflassoc
-Root: HKCR; Subkey: "AlpineFactionLevelEditor\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -editor -level ""%1"""; Tasks: rflassoc
+Root: HKCR; Subkey: "AlpineFactionLevelEditor\shell\open\command"; ValueType: "string"; ValueData: """{app}\{#LauncherExeName}"" -editor -level ""%1"""; Tasks: rflassoc
 Root: HKCU; Subkey: "Software\Volition\Red Faction\Alpine Faction"; ValueType: dword; ValueName: "DisplayWhatsNew"; ValueData: "1"; Flags: uninsdeletevalue; Check: IsUpgradeInstall
 
 [CustomMessages]
@@ -290,6 +321,10 @@ function RTPatchApply32NoCall(CmdLine: PAnsiChar): Longint;
 external 'RTPatchApply32NoCall@files:patchw32.dll cdecl delayload';
 function CreateSymbolicLinkA(lpSymlinkFileName: PAnsiChar; lpTargetFileName: PAnsiChar; dwFlags: Integer): Boolean;
 external 'CreateSymbolicLinkA@kernel32.dll stdcall delayload';
+#ifdef VRBuild
+function PlaySound(pszSound: String; hmod: Integer; fdwSound: Integer): Boolean;
+external 'PlaySoundW@winmm.dll stdcall';
+#endif
 
 function ApplyRTPatch(WorkDir: String; PatchFile: String): Boolean;
 var
@@ -366,7 +401,7 @@ begin
         Log('Deleting RedFaction.exe');
         DeleteFile(GetGameDir('RedFaction.exe'));
         Log('Creating RedFaction.exe symlink: ' + GetGameDir('RedFaction.exe'));
-        if not CreateSymbolicLinkA(GetGameDir('RedFaction.exe'), ExpandConstant('{app}\AlpineFactionLauncher.exe'), 0) then
+        if not CreateSymbolicLinkA(GetGameDir('RedFaction.exe'), ExpandConstant('{app}\{#LauncherExeName}'), 0) then
         begin
             MsgBox('Failed to create a symbolic link to the Alpine Faction launcher.', mbError, MB_OK);
         end;
@@ -423,8 +458,21 @@ procedure InitializeWizard;
 var
   Hyperlink: TNewStaticText;
 begin
+#ifdef VRBuild
+  WizardForm.Caption := 'ALPINE FACTION VR // OPENXR RELEASE';
+  WizardForm.WelcomeLabel1.Caption := 'ALPINE FACTION VR';
+  WizardForm.WelcomeLabel2.Caption := 'ONE INSTALL. ZERO FLATSCREENS.' + #13#10 + #13#10 +
+    'This wizard installs the complete Alpine Faction VR build and prepares a supported Red Faction installation automatically.' + #13#10 + #13#10 +
+    'A legally installed copy of Red Faction and an active OpenXR runtime are required.';
+  WizardForm.WelcomeLabel1.Font.Name := 'Consolas';
+  WizardForm.WelcomeLabel1.Font.Color := $00FFFF;
+  WizardForm.WelcomeLabel2.Font.Name := 'Consolas';
+  ExtractTemporaryFile('installer-music.wav');
+  PlaySound(ExpandConstant('{tmp}\installer-music.wav'), 0, $00020001 or $00000008);
+#else
   WizardForm.WelcomeLabel1.Caption := 'Welcome to the Alpine Faction Installer!';
   WizardForm.WelcomeLabel2.Caption := 'This wizard will install Alpine Faction v{#AppVer}.' + #13#10 + #13#10 + #13#10 + 'Please note that this is not a full game distribution. You must have an installed copy of Red Faction in order to use Alpine Faction.' + #13#10 + #13#10 + 'Alpine Faction is compatible with any full game distribution of Red Faction PC, including all retail releases (any language) and all digital releases like Steam and GoG.';
+#endif
 
   // help link
   Hyperlink := TNewStaticText.Create(WizardForm);
@@ -438,6 +486,13 @@ begin
 
   CreateSelectGameExePage;
 end;
+
+#ifdef VRBuild
+procedure DeinitializeSetup;
+begin
+  PlaySound('', 0, 0);
+end;
+#endif
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin

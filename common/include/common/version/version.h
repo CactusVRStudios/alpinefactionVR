@@ -22,7 +22,11 @@
 #define VERSION_TYPE_RELEASE  4
 
 // Variables to be modified during the release process
+#ifdef AF_ENABLE_OPENXR
+#define PRODUCT_NAME           "Alpine Faction VR"
+#else
 #define PRODUCT_NAME           "Alpine Faction"
+#endif
 #define VERSION_MAJOR          1
 #define VERSION_MINOR          4
 #define VERSION_PATCH          0

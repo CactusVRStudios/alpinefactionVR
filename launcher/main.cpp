@@ -11,9 +11,9 @@
 void InitLogging()
 {
     auto app_data_dir = Win32xx::GetAppDataPath();
-    auto af_data_dir = app_data_dir + "\\Alpine Faction";
+    auto af_data_dir = app_data_dir + "\\Alpine Faction VR";
     CreateDirectoryA(af_data_dir, nullptr);
-    auto log_file_path = af_data_dir + "\\AlpineFactionLauncher.log";
+    auto log_file_path = af_data_dir + "\\AlpineFactionVR.log";
     xlog::LoggerConfig::get()
         .add_appender<xlog::FileAppender>(log_file_path.GetString(), false)
         .add_appender<xlog::ConsoleAppender>()
@@ -25,10 +25,10 @@ void InitCrashHandler()
 {
     auto app_data_dir = Win32xx::GetAppDataPath();
     CrashHandlerConfig config;
-    std::snprintf(config.log_file, std::size(config.log_file), "%s\\Alpine Faction\\AlpineFactionLauncher.log", app_data_dir.c_str());
-    std::snprintf(config.output_dir, std::size(config.output_dir), "%s\\Alpine Faction", app_data_dir.c_str());
-    std::snprintf(config.app_name, std::size(config.app_name), "AlpineFactionLauncher");
-    config.add_known_module("AlpineFactionLauncher");
+    std::snprintf(config.log_file, std::size(config.log_file), "%s\\Alpine Faction VR\\AlpineFactionVR.log", app_data_dir.c_str());
+    std::snprintf(config.output_dir, std::size(config.output_dir), "%s\\Alpine Faction VR", app_data_dir.c_str());
+    std::snprintf(config.app_name, std::size(config.app_name), "AlpineFactionVR");
+    config.add_known_module("AlpineFactionVR");
     CrashHandlerStubInstall(config);
 }
 

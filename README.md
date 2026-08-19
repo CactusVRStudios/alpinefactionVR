@@ -18,11 +18,11 @@ An active OpenXR runtime and a working PC VR setup are required. VR mode forces 
 ## Installation
 
 1. Install a legitimate copy of **Red Faction**.
-2. Install the regular release of [Alpine Faction](https://alpinefaction.com). This prepares the game installation and patches it to the required `RF_120na` version.
-3. Download the latest ZIP from this repository's [Releases](https://github.com/CactusVRStudios/alpinefactionVR/releases) page.
-4. Open the ZIP and extract the contents of the `VR Mod` folder over your installed **Alpine Faction** directory, replacing files when prompted.
-5. Start `AlpineFactionLauncher.exe`, open **Options**, enable **VR / OpenXR**, and select your preferred turn mode.
-6. Make sure your headset's OpenXR runtime is active, then launch the game.
+2. Download the latest installer from this repository's [Releases](https://github.com/CactusVRStudios/alpinefactionVR/releases) page and run it. It locates Red Faction, updates supported retail/digital versions when needed, creates the required directories, and installs Alpine Faction VR in one pass.
+3. Start `AlpineFactionVR.exe`, open **Options**, enable **VR / OpenXR**, and select your preferred turn mode.
+4. Make sure your headset's OpenXR runtime is active, then launch the game.
+
+An advanced/manual ZIP containing only the mod files is provided with every release. It requires an already prepared Alpine Faction installation; extract it over the Alpine Faction directory and replace files when prompted.
 
 You can also enable VR with the `-vr` command-line option. Settings are stored in `alpine_settings.ini`.
 
@@ -115,6 +115,16 @@ cmake --build build-afvr --config Release
 ```
 
 The pinned Khronos OpenXR SDK is fetched during configuration, and the 32-bit loader is linked statically. See [docs/BUILDING.md](docs/BUILDING.md) for more information.
+
+## Creating release packages
+
+After building the OpenXR-enabled Release configuration, create both supported release artifacts with:
+
+```powershell
+.\tools\make-vr-release.ps1 -Version "alpha-0.5" -BuildDir ".\build-afvr\bin\Release"
+```
+
+The script always creates a basic ZIP and, when Inno Setup 6 and the patch payload in `setup/patches/output` are available, a one-step installer. Use `-SkipInstaller` when only the ZIP is needed.
 
 ## Credits and license
 
