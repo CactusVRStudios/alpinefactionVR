@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -192,7 +193,17 @@ namespace afvr
 
         XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
         check(xrGetInstanceProperties(instance_, &properties), "xrGetInstanceProperties");
+        std::string runtime_name = properties.runtimeName;
+        std::ranges::transform(runtime_name, runtime_name.begin(),
+            [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+        steamvr_runtime_ = runtime_name.find("steamvr") != std::string::npos;
         xlog::info("[AFVR] Runtime: {} {}", properties.runtimeName, format_version(properties.runtimeVersion));
+        if (steamvr_runtime_) {
+            xlog::info(
+                "[AFVR] SteamVR runtime detected; menu uses the two-primary-button hold chord");
+        }
         xlog::info("[AFVR] Requested OpenXR API: {} (SDK headers {})",
             format_version(requested_api_version), format_version(XR_CURRENT_API_VERSION));
         xlog::info("[AFVR] Enabled extension: {}", XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
@@ -405,6 +416,8 @@ namespace afvr
             "grip_pose", "Grip Pose", both_hands);
         create_action(aim_pose_action_, XR_ACTION_TYPE_POSE_INPUT,
             "aim_pose", "Aim Pose", both_hands);
+        create_action(left_trigger_action_, XR_ACTION_TYPE_FLOAT_INPUT,
+            "left_trigger", "Index Alternate Fire", left_hand);
         create_action(right_trigger_action_, XR_ACTION_TYPE_FLOAT_INPUT,
             "right_trigger", "Right Trigger", right_hand);
         create_action(reload_action_, XR_ACTION_TYPE_BOOLEAN_INPUT,
@@ -417,8 +430,6 @@ namespace afvr
             "flashlight", "Toggle Flashlight or Headlight", left_hand);
         create_action(grip_action_, XR_ACTION_TYPE_FLOAT_INPUT, "grip", "Grip", both_hands);
         create_action(menu_action_, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu", left_hand);
-        create_action(index_menu_force_action_, XR_ACTION_TYPE_FLOAT_INPUT,
-            "index_menu_force", "Menu (Index Trackpad)", left_hand);
 
         auto path = [&](const char* value) {
             XrPath result = XR_NULL_PATH;
@@ -452,6 +463,7 @@ namespace afvr
             XrActionSuggestedBinding{grip_pose_action_, path("/user/hand/right/input/grip/pose")},
             XrActionSuggestedBinding{aim_pose_action_, path("/user/hand/left/input/aim/pose")},
             XrActionSuggestedBinding{aim_pose_action_, path("/user/hand/right/input/aim/pose")},
+            XrActionSuggestedBinding{left_trigger_action_, path("/user/hand/left/input/trigger/value")},
             XrActionSuggestedBinding{right_trigger_action_, path("/user/hand/right/input/trigger/value")},
             XrActionSuggestedBinding{crouch_action_, path("/user/hand/right/input/a/click")},
             XrActionSuggestedBinding{jump_action_, path("/user/hand/right/input/b/click")},
@@ -459,9 +471,6 @@ namespace afvr
             XrActionSuggestedBinding{flashlight_action_, path("/user/hand/left/input/b/click")},
             XrActionSuggestedBinding{grip_action_, path("/user/hand/left/input/squeeze/value")},
             XrActionSuggestedBinding{grip_action_, path("/user/hand/right/input/squeeze/value")},
-            // Index has no dedicated application-menu button. Use a firm left
-            // trackpad press so left A remains available for reload.
-            XrActionSuggestedBinding{index_menu_force_action_, path("/user/hand/left/input/trackpad/force")},
         };
         auto suggest_bindings = [&](XrPath interaction_profile,
             const auto& bindings, const char* profile_name) {
@@ -545,6 +554,7 @@ namespace afvr
                 get_boolean(left_thumbstick_click_action_, hand_paths_[0]);
             input_state_.right_thumbstick_click =
                 get_boolean(right_thumbstick_click_action_, hand_paths_[1]);
+            input_state_.left_trigger = get_float(left_trigger_action_, hand_paths_[0]);
             input_state_.right_trigger = get_float(right_trigger_action_, hand_paths_[1]);
             input_state_.grip[0] = get_float(grip_action_, hand_paths_[0]);
             input_state_.grip[1] = get_float(grip_action_, hand_paths_[1]);
@@ -552,8 +562,15 @@ namespace afvr
             input_state_.jump = get_boolean(jump_action_, hand_paths_[1]);
             input_state_.crouch = get_boolean(crouch_action_, hand_paths_[1]);
             input_state_.flashlight = get_boolean(flashlight_action_, hand_paths_[0]);
-            input_state_.menu = get_boolean(menu_action_, hand_paths_[0]) ||
-                get_float(index_menu_force_action_, hand_paths_[0]) >= 0.65f;
+            input_state_.menu = get_boolean(menu_action_, hand_paths_[0]);
+
+            XrInteractionProfileState left_profile{
+                XR_TYPE_INTERACTION_PROFILE_STATE};
+            check(xrGetCurrentInteractionProfile(
+                session_, hand_paths_[0], &left_profile),
+                "xrGetCurrentInteractionProfile(left)");
+            input_state_.index_profile_active =
+                left_profile.interactionProfile == index_interaction_profile_;
 
             if (!interaction_profile_logged_) {
                 for (XrPath hand_path : hand_paths_) {
@@ -569,7 +586,7 @@ namespace afvr
                         xlog::info("[AFVR] Oculus Touch profile active: left stick holster, left X reload, left Y flashlight, right A crouch, right B jump");
                     }
                     else if (profile_state.interactionProfile == index_interaction_profile_) {
-                        xlog::info("[AFVR] Valve Index profile active: left stick holster, left A reload, left B flashlight, right A crouch, right B jump, left trackpad menu");
+                        xlog::info("[AFVR] Valve Index profile active: left trigger alternate fire, left A reload, left B flashlight, right A crouch, right B jump");
                     }
                     else {
                         std::array<char, XR_MAX_PATH_LENGTH> profile_name{};
@@ -1490,6 +1507,7 @@ namespace afvr
                     const auto menu_copy_start = std::chrono::steady_clock::now();
                     render_menu(OpenXrMenuRenderInfo{
                         menu_swapchain_.images[image_index].texture,
+                        center_pose,
                         menu_swapchain_.width,
                         menu_swapchain_.height,
                     });
@@ -1676,6 +1694,7 @@ namespace afvr
         session_state_ = XR_SESSION_STATE_UNKNOWN;
         session_running_ = false;
         exit_requested_ = false;
+        steamvr_runtime_ = false;
         frame_waited_ = false;
         frame_begun_ = false;
         waited_frame_state_ = XrFrameState{XR_TYPE_FRAME_STATE};
@@ -1703,6 +1722,7 @@ namespace afvr
         right_thumbstick_click_action_ = XR_NULL_HANDLE;
         grip_pose_action_ = XR_NULL_HANDLE;
         aim_pose_action_ = XR_NULL_HANDLE;
+        left_trigger_action_ = XR_NULL_HANDLE;
         right_trigger_action_ = XR_NULL_HANDLE;
         reload_action_ = XR_NULL_HANDLE;
         jump_action_ = XR_NULL_HANDLE;
@@ -1710,7 +1730,6 @@ namespace afvr
         flashlight_action_ = XR_NULL_HANDLE;
         grip_action_ = XR_NULL_HANDLE;
         menu_action_ = XR_NULL_HANDLE;
-        index_menu_force_action_ = XR_NULL_HANDLE;
         environment_blend_mode_ = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         get_d3d11_graphics_requirements_ = nullptr;
         enumerate_display_refresh_rates_ = nullptr;

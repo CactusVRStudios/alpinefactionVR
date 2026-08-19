@@ -66,6 +66,21 @@ namespace afvr
         uint32_t g_scene_render_diagnostic_frames = 0;
         float g_hmd_relative_yaw = 0.0f;
         float g_hmd_relative_forward_y = 0.0f;
+        rf::Matrix3 g_hmd_relative_orientation{
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f},
+        };
+        bool g_hmd_relative_orientation_valid = false;
+        bool g_mounted_aim_active = false;
+        bool g_mounted_aim_follows_host = false;
+        int g_mounted_aim_host_handle = -1;
+        rf::Matrix3 g_mounted_neutral_orientation{};
+        rf::Matrix3 g_mounted_neutral_relative_to_host{};
+        rf::Matrix3 g_mounted_native_aim_orientation{};
+        bool g_mounted_native_aim_valid = false;
+        bool g_mounted_aim_logged = false;
+        bool g_vehicle_controls_logged = false;
         bool g_movement_input_logged = false;
         bool g_ladder_input_logged = false;
         bool g_snap_turn_logged = false;
@@ -113,6 +128,11 @@ namespace afvr
         bool g_frame_limiter_bypassed = false;
         bool g_multiplayer_best_effort_logged = false;
         bool g_menu_capture_active = false;
+        std::chrono::steady_clock::time_point g_steamvr_menu_chord_started{};
+        bool g_steamvr_menu_chord_timing = false;
+        rf::Vector3 g_roomscale_world_correction{};
+        int g_roomscale_collision_frame = -1;
+        bool g_roomscale_collision_logged = false;
         std::chrono::steady_clock::time_point g_next_desktop_mirror_update{};
         int g_desktop_mirror_decision_frame = -1;
         bool g_desktop_mirror_update_due = false;
@@ -648,6 +668,100 @@ namespace afvr
             };
         }
 
+        rf::Matrix3 relative_orientation(const rf::Matrix3& base,
+            const rf::Matrix3& world)
+        {
+            const auto to_base_space = [&](const rf::Vector3& direction) {
+                return rf::Vector3{
+                    base.rvec.dot_prod(direction),
+                    base.uvec.dot_prod(direction),
+                    base.fvec.dot_prod(direction),
+                };
+            };
+            return {
+                to_base_space(world.rvec),
+                to_base_space(world.uvec),
+                to_base_space(world.fvec),
+            };
+        }
+
+        bool get_local_mounted_aim_context(rf::Entity*& entity,
+            rf::Entity*& host, bool& follows_host)
+        {
+            entity = nullptr;
+            host = nullptr;
+            follows_host = false;
+            if (!rf::local_player) {
+                return false;
+            }
+
+            entity = rf::entity_from_handle(rf::local_player->entity_handle);
+            if (!entity) {
+                return false;
+            }
+
+            const bool on_turret = rf::entity_is_on_turret(entity);
+            const bool jeep_gunner = rf::entity_is_jeep_gunner(entity);
+            if (!on_turret && !jeep_gunner) {
+                return false;
+            }
+
+            host = rf::entity_from_handle(entity->host_handle);
+            if (!host) {
+                return false;
+            }
+
+            // A jeep gunner's neutral view follows the moving vehicle body.
+            // A placed turret is itself the rotating host, so its entry
+            // orientation must remain fixed or its aim would be applied twice.
+            follows_host = jeep_gunner;
+            return true;
+        }
+
+        void clear_mounted_aim_state()
+        {
+            g_mounted_aim_active = false;
+            g_mounted_aim_follows_host = false;
+            g_mounted_aim_host_handle = -1;
+            g_mounted_native_aim_valid = false;
+        }
+
+        rf::Matrix3 mounted_vr_view_base(const rf::Matrix3& native_view)
+        {
+            rf::Entity* entity = nullptr;
+            rf::Entity* host = nullptr;
+            bool follows_host = false;
+            if (!get_local_mounted_aim_context(entity, host, follows_host)) {
+                clear_mounted_aim_state();
+                return native_view;
+            }
+
+            if (!g_mounted_aim_active ||
+                g_mounted_aim_host_handle != host->handle ||
+                g_mounted_aim_follows_host != follows_host) {
+                g_mounted_aim_active = true;
+                g_mounted_aim_follows_host = follows_host;
+                g_mounted_aim_host_handle = host->handle;
+                g_mounted_neutral_orientation = native_view;
+                g_mounted_neutral_relative_to_host =
+                    relative_orientation(host->orient, native_view);
+                g_mounted_native_aim_valid = false;
+                xlog::info("[AFVR] Mounted HMD aim activated for {}",
+                    follows_host ? "jeep gunner" : "turret");
+            }
+            else if (g_mounted_aim_follows_host) {
+                g_mounted_neutral_orientation = compose_orientation(
+                    host->orient, g_mounted_neutral_relative_to_host);
+            }
+
+            // RF's flat mounted camera is the authoritative current turret aim.
+            // Keep it for the next simulation input pass, but render the HMD
+            // from the neutral mount frame so that aim rotation is not doubled.
+            g_mounted_native_aim_orientation = native_view;
+            g_mounted_native_aim_valid = true;
+            return g_mounted_neutral_orientation;
+        }
+
         rf::Matrix3 euler_rotation_matrix(const rf::Vector3& rotation)
         {
             const float pitch_sin = std::sin(rotation.x);
@@ -710,7 +824,9 @@ namespace afvr
             g_tracking_origin.yaw = std::atan2(
                 hmd_orientation.fvec.x, hmd_orientation.fvec.z);
             g_recenter_requested = false;
-            xlog::info("[AFVR] Tracking yaw recentered");
+            g_roomscale_world_correction = {};
+            g_roomscale_collision_frame = -1;
+            xlog::info("[AFVR] Tracking origin and player height recalibrated");
             xlog::info(
                 "[AFVR] Tracking origin position=({:.3f}, {:.3f}, {:.3f}), neutral yaw={:.2f} degrees",
                 hmd_pose.position.x, hmd_pose.position.y, hmd_pose.position.z,
@@ -750,9 +866,76 @@ namespace afvr
 
             world_position = base_position +
                 transform_direction(base_orientation, relative_rf_position);
+            world_position += g_roomscale_world_correction;
             world_orientation = compose_orientation(
                 base_orientation, relative_rf_orientation);
             return true;
+        }
+
+        rf::Vector3 roomscale_collision_correction(
+            const rf::Vector3& base_position,
+            const rf::Matrix3& base_orientation,
+            const rf::Vector3& relative_center_position)
+        {
+            if (g_menu_capture_active ||
+                rf::gameseq_get_state() != rf::GS_GAMEPLAY ||
+                !rf::local_player) {
+                return {};
+            }
+
+            auto* entity = rf::entity_from_handle(rf::local_player->entity_handle);
+            if (!entity || rf::entity_is_dying(entity) ||
+                rf::entity_in_vehicle(entity) ||
+                rf::entity_is_on_turret(entity)) {
+                return {};
+            }
+
+            rf::Vector3 start = base_position;
+            rf::Vector3 desired = base_position +
+                transform_direction(base_orientation, relative_center_position);
+            rf::Vector3 movement = desired - start;
+            const float movement_length = movement.len();
+            if (movement_length <= 0.001f) {
+                return {};
+            }
+
+            const rf::Vector3 direction = movement / movement_length;
+            rf::PCollisionOut collision{};
+            collision.obj_handle = -1;
+            constexpr float head_radius = 0.16f;
+            constexpr int collision_flags =
+                rf::CF_PROCESS_INVISIBLE_FACES;
+            bool collision_hit = rf::collide_sphereline_world(
+                    &start, &desired, head_radius, collision_flags,
+                    entity, nullptr, &collision);
+            if (!collision_hit) {
+                collision = {};
+                collision.obj_handle = -1;
+                collision_hit = rf::collide_linesegment_world(
+                    start, desired, collision_flags, &collision);
+            }
+            if (!collision_hit) {
+                return {};
+            }
+
+            float collision_distance = collision.hit_time * movement_length;
+            if (!std::isfinite(collision.hit_time) ||
+                collision.hit_time < 0.0f || collision.hit_time > 1.0f) {
+                collision_distance = std::clamp(
+                    (collision.hit_point - start).dot_prod(direction),
+                    0.0f, movement_length);
+            }
+            constexpr float wall_skin = 0.02f;
+            const float safe_distance = std::max(
+                collision_distance - wall_skin, 0.0f);
+            const rf::Vector3 constrained = start + direction * safe_distance;
+            if (!g_roomscale_collision_logged) {
+                g_roomscale_collision_logged = true;
+                xlog::info(
+                    "[AFVR] Room-scale HMD collision pushback activated (hit time {:.3f}, object {})",
+                    collision.hit_time, collision.obj_handle);
+            }
+            return constrained - desired;
         }
 
         rf::Vector3 normalized_or(rf::Vector3 value, const rf::Vector3& fallback)
@@ -1424,10 +1607,21 @@ namespace afvr
                     // Left squeeze is contextual: near a gun's support point it
                     // acquires the foregrip and must not also activate the world.
                     // Away from the weapon it remains the ordinary Use action.
-                    injected.down = injected.just_pressed =
-                        g_left_grip_just_pressed &&
-                        !g_two_hand_support_available &&
-                        !g_two_hand_weapon_active;
+                    // Once mounted, always preserve Use so a stale support-grip
+                    // state can never prevent exiting a turret or vehicle.
+                    if (auto* entity = rf::entity_from_handle(
+                            rf::local_player->entity_handle);
+                        entity && (rf::entity_in_vehicle(entity) ||
+                            rf::entity_is_on_turret(entity))) {
+                        injected.down = injected.just_pressed =
+                            g_left_grip_just_pressed;
+                    }
+                    else {
+                        injected.down = injected.just_pressed =
+                            g_left_grip_just_pressed &&
+                            !g_two_hand_support_available &&
+                            !g_two_hand_weapon_active;
+                    }
                     diagnostic_name = "Use";
                     break;
                 case rf::CC_ACTION_PREV_WEAPON:
@@ -1604,6 +1798,8 @@ namespace afvr
                                 relative_tracking_position(eye.view.pose.position);
                             const rf::Matrix3 relative_rf_orientation =
                                 relative_tracking_orientation(eye.view.pose.orientation);
+                            g_hmd_relative_orientation = relative_rf_orientation;
+                            g_hmd_relative_orientation_valid = true;
                             if (!g_head_rotation_logged &&
                                 (std::abs(relative_rf_orientation.fvec.x) > 0.01f ||
                                     std::abs(relative_rf_orientation.fvec.y) > 0.01f)) {
@@ -1616,19 +1812,33 @@ namespace afvr
                             g_hmd_relative_forward_y =
                                 std::clamp(relative_rf_orientation.fvec.y, -1.0f, 1.0f);
 
+                            const rf::Matrix3 vr_view_base =
+                                mounted_vr_view_base(base_eye_matrix);
+                            const rf::Vector3 relative_center_position =
+                                relative_tracking_position(
+                                    eye.center_pose.position);
+                            if (g_roomscale_collision_frame != rf::frame_count) {
+                                g_roomscale_world_correction =
+                                    roomscale_collision_correction(
+                                        base_eye_pos, vr_view_base,
+                                        relative_center_position);
+                                g_roomscale_collision_frame = rf::frame_count;
+                            }
+
                             rf::Vector3 eye_pos = base_eye_pos +
-                                transform_direction(base_eye_matrix, relative_rf_position);
+                                transform_direction(vr_view_base, relative_rf_position) +
+                                g_roomscale_world_correction;
                             rf::Matrix3 eye_matrix = compose_orientation(
-                                base_eye_matrix, relative_rf_orientation);
+                                vr_view_base, relative_rf_orientation);
 
                             // center_pose is identical for both eye callbacks.
                             // Cache it in world space for simulation paths that
                             // execute before the next stereo render traversal.
                             g_head_pose_valid = transform_tracked_pose_to_world(
-                                eye.center_pose, base_eye_pos, base_eye_matrix,
+                                eye.center_pose, base_eye_pos, vr_view_base,
                                 g_head_position, g_head_orientation);
 
-                            update_weapon_pose(base_eye_pos, base_eye_matrix);
+                            update_weapon_pose(base_eye_pos, vr_view_base);
                             if (g_debug_weapon_at_hmd && g_weapon_pose_valid) {
                                 // Development discriminator: this bypasses the
                                 // controller translation and places the weapon
@@ -1775,7 +1985,13 @@ namespace afvr
                 const float stick_x = apply_stick_deadzone(input.left_thumbstick.x);
                 const float stick_y = apply_stick_deadzone(input.left_thumbstick.y);
                 auto* entity = rf::entity_from_handle(player->entity_handle);
-                const bool ladder_movement = entity && g_head_pose_valid &&
+                const bool in_vehicle = entity && rf::entity_in_vehicle(entity);
+                const bool jeep_gunner = entity && rf::entity_is_jeep_gunner(entity);
+                const bool mounted_aim = entity &&
+                    (rf::entity_is_on_turret(entity) || jeep_gunner);
+                const bool vehicle_driver = in_vehicle && !jeep_gunner;
+                const bool ladder_movement = entity && !in_vehicle &&
+                    !mounted_aim && g_head_pose_valid &&
                     (entity->current_climb_region || rf::entity_is_climbing(entity));
                 const float head_forward_horizontal = ladder_movement
                     ? std::sqrt(std::max(0.0f,
@@ -1795,10 +2011,19 @@ namespace afvr
                 g_previous_strafe_right = strafe_right;
                 const float yaw_sin = std::sin(g_hmd_relative_yaw);
                 const float yaw_cos = std::cos(g_hmd_relative_yaw);
-                controls->move.x += stick_x * yaw_cos +
-                    stick_y * yaw_sin * head_forward_horizontal;
-                controls->move.z += stick_y * yaw_cos * head_forward_horizontal -
-                    stick_x * yaw_sin;
+                if (vehicle_driver) {
+                    // The native hook redirects this ControlInfo to the vehicle
+                    // for drivers. Keep movement in vehicle-local space so
+                    // looking around does not alter throttle or ground steering.
+                    controls->move.x += stick_x;
+                    controls->move.z += stick_y;
+                }
+                else if (!mounted_aim) {
+                    controls->move.x += stick_x * yaw_cos +
+                        stick_y * yaw_sin * head_forward_horizontal;
+                    controls->move.z += stick_y * yaw_cos * head_forward_horizontal -
+                        stick_x * yaw_sin;
+                }
                 if (ladder_movement) {
                     controls->move.y += stick_y * g_hmd_relative_forward_y;
                     if (!g_ladder_input_logged && std::abs(stick_y) > 0.0f &&
@@ -1835,12 +2060,77 @@ namespace afvr
                 }
 
                 const bool cycle_axis_dominant =
+                    !in_vehicle && !mounted_aim &&
                     std::abs(input.right_thumbstick.y) >= 0.7f &&
                     std::abs(input.right_thumbstick.y) >=
                         std::abs(input.right_thumbstick.x) + 0.1f;
                 const float turn_x = cycle_axis_dominant
                     ? 0.0f : input.right_thumbstick.x;
                 if (entity) {
+                    if (mounted_aim && g_mounted_aim_active &&
+                        g_mounted_native_aim_valid &&
+                        g_hmd_relative_orientation_valid) {
+                        const rf::Matrix3 desired_aim = compose_orientation(
+                            g_mounted_neutral_orientation,
+                            g_hmd_relative_orientation);
+                        const rf::Vector3& desired_forward = desired_aim.fvec;
+                        const float local_right =
+                            g_mounted_native_aim_orientation.rvec.dot_prod(desired_forward);
+                        const float local_up =
+                            g_mounted_native_aim_orientation.uvec.dot_prod(desired_forward);
+                        const float local_forward =
+                            g_mounted_native_aim_orientation.fvec.dot_prod(desired_forward);
+                        const float yaw_error = std::atan2(local_right, local_forward);
+                        const float pitch_error = std::atan2(local_up,
+                            std::sqrt(std::max(0.0f,
+                                local_right * local_right +
+                                local_forward * local_forward)));
+
+                        // ControlInfo::rot is RF's normalized native steering
+                        // input. A proportional angular error gives mounted aim
+                        // fast convergence without depending on headset FPS.
+                        constexpr float mounted_aim_gain = 3.0f;
+                        controls->rot.y = std::clamp(
+                            controls->rot.y + yaw_error * mounted_aim_gain,
+                            -1.0f, 1.0f);
+                        controls->rot.x = std::clamp(
+                            controls->rot.x + pitch_error * mounted_aim_gain,
+                            -1.0f, 1.0f);
+                        if (!g_mounted_aim_logged &&
+                            (std::abs(yaw_error) > 0.01f ||
+                                std::abs(pitch_error) > 0.01f)) {
+                            g_mounted_aim_logged = true;
+                            xlog::info(
+                                "[AFVR] Mounted turret is receiving HMD yaw/pitch aim");
+                        }
+                    }
+                    else if (vehicle_driver) {
+                        controls->rot.y = std::clamp(
+                            controls->rot.y + apply_stick_deadzone(
+                                input.right_thumbstick.x),
+                            -1.0f, 1.0f);
+                        controls->rot.x = std::clamp(
+                            controls->rot.x + apply_stick_deadzone(
+                                input.right_thumbstick.y),
+                            -1.0f, 1.0f);
+                        if (!g_vehicle_controls_logged &&
+                            (std::abs(input.left_thumbstick.x) > 0.0f ||
+                                std::abs(input.left_thumbstick.y) > 0.0f ||
+                                std::abs(input.right_thumbstick.x) > 0.0f ||
+                                std::abs(input.right_thumbstick.y) > 0.0f)) {
+                            g_vehicle_controls_logged = true;
+                            xlog::info(
+                                "[AFVR] Vehicle controls active: left stick movement, right stick steering");
+                        }
+                    }
+
+                    // Ordinary smooth/snap body turning applies only while on
+                    // foot. Mounted roles consume rotation through ControlInfo.
+                    if (in_vehicle || mounted_aim) {
+                        g_snap_turn_latched = false;
+                        return;
+                    }
+
                     constexpr float pi = 3.14159265359f;
                     constexpr float degrees_to_radians = pi / 180.0f;
                     if (g_game_config.vr_turn_mode == GameConfig::VrTurnMode::smooth) {
@@ -2334,6 +2624,10 @@ namespace afvr
             g_recenter_requested = true;
             g_head_rotation_logged = false;
             g_head_pose_valid = false;
+            g_hmd_relative_orientation_valid = false;
+            g_roomscale_world_correction = {};
+            g_roomscale_collision_frame = -1;
+            clear_mounted_aim_state();
         }
         if (g_openxr && !g_openxr->poll_events()) {
             xlog::warn("[AFVR] OpenXR requested shutdown; returning to flat mode");
@@ -2362,6 +2656,14 @@ namespace afvr
                 is_singleplayer_death_menu_active();
             g_menu_capture_active = g_openxr->is_session_running() &&
                 (g_singleplayer_death_menu_active || is_supported_vr_menu_state());
+            if (g_menu_capture_active != menu_was_active) {
+                g_recenter_requested = true;
+                g_roomscale_world_correction = {};
+                g_roomscale_collision_frame = -1;
+                xlog::info(
+                    "[AFVR] Tracking origin and player height recalibration requested on menu {}",
+                    g_menu_capture_active ? "open" : "close");
+            }
             if (g_menu_capture_active && !menu_was_active) {
                 g_menu_pointer_using_controller = true;
                 if (g_singleplayer_death_menu_active) {
@@ -2399,9 +2701,32 @@ namespace afvr
                 g_menu_pointer_valid = false;
             }
             const auto& input = g_openxr->input_state();
+            const bool steamvr_menu_chord_buttons =
+                g_openxr->is_steamvr_runtime() &&
+                input.reload && input.crouch;
+            bool steamvr_menu_chord_held = false;
+            if (steamvr_menu_chord_buttons) {
+                if (!g_steamvr_menu_chord_timing) {
+                    g_steamvr_menu_chord_timing = true;
+                    g_steamvr_menu_chord_started =
+                        std::chrono::steady_clock::now();
+                }
+                constexpr auto menu_chord_hold =
+                    std::chrono::milliseconds(600);
+                steamvr_menu_chord_held =
+                    std::chrono::steady_clock::now() -
+                        g_steamvr_menu_chord_started >= menu_chord_hold;
+            }
+            else {
+                g_steamvr_menu_chord_timing = false;
+                g_steamvr_menu_chord_started = {};
+            }
             const bool trigger_pressed =
                 g_openxr->is_session_running() &&
                 input.right_trigger >= 0.55f;
+            const bool index_alt_trigger_pressed =
+                g_openxr->is_session_running() &&
+                input.index_profile_active && input.left_trigger >= 0.55f;
             g_trigger_just_pressed =
                 trigger_pressed && !g_previous_trigger_pressed;
             if (g_menu_capture_active && g_trigger_just_pressed) {
@@ -2410,14 +2735,18 @@ namespace afvr
             g_trigger_pressed = trigger_pressed;
             g_previous_trigger_pressed = trigger_pressed;
 
-            g_reload_pressed = g_openxr->is_session_running() && input.reload;
+            g_reload_pressed = g_openxr->is_session_running() && input.reload &&
+                !steamvr_menu_chord_buttons;
             g_jump_pressed = g_openxr->is_session_running() && input.jump;
-            g_crouch_pressed = g_openxr->is_session_running() && input.crouch;
+            g_crouch_pressed = g_openxr->is_session_running() && input.crouch &&
+                !steamvr_menu_chord_buttons;
             g_holster_pressed =
                 g_openxr->is_session_running() && input.left_thumbstick_click;
             g_flashlight_pressed =
                 g_openxr->is_session_running() && input.flashlight;
-            g_menu_button_pressed = g_openxr->is_session_running() && input.menu;
+            g_menu_button_pressed = g_openxr->is_session_running() &&
+                (g_openxr->is_steamvr_runtime()
+                    ? steamvr_menu_chord_held : input.menu);
             const bool laser_toggle_pressed =
                 g_openxr->is_session_running() && input.right_thumbstick_click;
             if (laser_toggle_pressed && !g_previous_laser_toggle_pressed) {
@@ -2481,24 +2810,31 @@ namespace afvr
                 !trigger_pressed && !right_grip_pressed && !g_left_grip_pressed &&
                 !g_reload_pressed && !g_jump_pressed && !g_crouch_pressed &&
                 !g_holster_pressed && !g_flashlight_pressed &&
+                !steamvr_menu_chord_buttons &&
+                input.left_trigger <= 0.35f &&
                 std::abs(input.right_thumbstick.y) <= 0.35f) {
                 g_gameplay_input_blocked_until_release = false;
             }
-            if (g_menu_capture_active && trigger_pressed) {
+            if (g_menu_capture_active &&
+                (trigger_pressed || index_alt_trigger_pressed)) {
                 g_fire_blocked_until_trigger_release = true;
             }
-            else if (!trigger_pressed) {
+            else if (!trigger_pressed && !index_alt_trigger_pressed) {
                 g_fire_blocked_until_trigger_release = false;
             }
             if (g_trigger_just_pressed) {
-                g_fire_mode_secondary = right_grip_pressed;
+                g_fire_mode_secondary =
+                    !input.index_profile_active && right_grip_pressed;
             }
             else if (!trigger_pressed) {
                 g_fire_mode_secondary = false;
             }
             g_primary_fire_pressed = trigger_pressed && !g_fire_mode_secondary &&
+                !index_alt_trigger_pressed &&
                 !g_menu_capture_active && !g_fire_blocked_until_trigger_release;
-            g_secondary_fire_pressed = trigger_pressed && g_fire_mode_secondary &&
+            g_secondary_fire_pressed =
+                ((trigger_pressed && g_fire_mode_secondary) ||
+                    index_alt_trigger_pressed) &&
                 !g_menu_capture_active && !g_fire_blocked_until_trigger_release;
             g_primary_fire_just_pressed = g_primary_fire_pressed &&
                 !g_previous_primary_fire;
@@ -2509,8 +2845,14 @@ namespace afvr
 
             g_previous_weapon_pulse = false;
             g_next_weapon_pulse = false;
+            auto* local_entity = rf::local_player
+                ? rf::entity_from_handle(rf::local_player->entity_handle)
+                : nullptr;
+            const bool local_mounted = local_entity &&
+                (rf::entity_in_vehicle(local_entity) ||
+                    rf::entity_is_on_turret(local_entity));
             if (!g_menu_capture_active &&
-                !g_gameplay_input_blocked_until_release) {
+                !g_gameplay_input_blocked_until_release && !local_mounted) {
                 const float cycle_y = input.right_thumbstick.y;
                 const float turn_x = input.right_thumbstick.x;
                 const bool vertical_dominant =
@@ -2549,6 +2891,11 @@ namespace afvr
         }
         static bool copy_failure_logged = false;
         (void)g_openxr->render_menu_frame([&](const OpenXrMenuRenderInfo& menu) {
+            if (!g_tracking_origin.valid || g_recenter_requested) {
+                capture_tracking_origin(menu.center_pose);
+                g_roomscale_world_correction = {};
+                g_roomscale_collision_frame = -1;
+            }
             if (!copy_d3d11_menu(menu.texture) && !copy_failure_logged) {
                 copy_failure_logged = true;
                 xlog::error("[AFVR] RF menu target could not be copied to the OpenXR quad");
@@ -2584,6 +2931,15 @@ namespace afvr
         g_head_rotation_logged = false;
         g_hmd_relative_yaw = 0.0f;
         g_hmd_relative_forward_y = 0.0f;
+        g_hmd_relative_orientation = {
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f},
+        };
+        g_hmd_relative_orientation_valid = false;
+        clear_mounted_aim_state();
+        g_mounted_aim_logged = false;
+        g_vehicle_controls_logged = false;
         g_movement_input_logged = false;
         g_ladder_input_logged = false;
         g_snap_turn_logged = false;
@@ -2623,6 +2979,11 @@ namespace afvr
         g_frame_limiter_bypassed = false;
         g_multiplayer_best_effort_logged = false;
         g_menu_capture_active = false;
+        g_steamvr_menu_chord_started = {};
+        g_steamvr_menu_chord_timing = false;
+        g_roomscale_world_correction = {};
+        g_roomscale_collision_frame = -1;
+        g_roomscale_collision_logged = false;
         g_next_desktop_mirror_update = {};
         g_desktop_mirror_decision_frame = -1;
         g_desktop_mirror_update_due = false;
@@ -2762,6 +3123,8 @@ namespace afvr
 #ifdef AF_ENABLE_OPENXR
         if (g_openxr) {
             g_recenter_requested = true;
+            g_roomscale_world_correction = {};
+            g_roomscale_collision_frame = -1;
             if (g_menu_capture_active) {
                 g_openxr->set_menu_active(false);
                 g_openxr->set_menu_active(true);

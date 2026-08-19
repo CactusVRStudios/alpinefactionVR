@@ -21,8 +21,10 @@ namespace afvr
         std::array<XrPosef, 2> aim_poses{};
         std::array<bool, 2> grip_pose_valid{};
         std::array<bool, 2> aim_pose_valid{};
+        float left_trigger = 0.0f;
         float right_trigger = 0.0f;
         std::array<float, 2> grip{};
+        bool index_profile_active = false;
         bool reload = false;
         bool jump = false;
         bool crouch = false;
@@ -56,6 +58,7 @@ namespace afvr
     struct OpenXrMenuRenderInfo
     {
         ID3D11Texture2D* texture;
+        XrPosef center_pose;
         int width;
         int height;
     };
@@ -87,6 +90,7 @@ namespace afvr
         [[nodiscard]] bool is_session_running() const { return session_running_; }
         [[nodiscard]] XrSessionState session_state() const { return session_state_; }
         [[nodiscard]] const OpenXrInputState& input_state() const { return input_state_; }
+        [[nodiscard]] bool is_steamvr_runtime() const { return steamvr_runtime_; }
 
     private:
         void create_instance();
@@ -114,6 +118,7 @@ namespace afvr
         XrAction right_thumbstick_click_action_ = XR_NULL_HANDLE;
         XrAction grip_pose_action_ = XR_NULL_HANDLE;
         XrAction aim_pose_action_ = XR_NULL_HANDLE;
+        XrAction left_trigger_action_ = XR_NULL_HANDLE;
         XrAction right_trigger_action_ = XR_NULL_HANDLE;
         XrAction reload_action_ = XR_NULL_HANDLE;
         XrAction jump_action_ = XR_NULL_HANDLE;
@@ -121,7 +126,6 @@ namespace afvr
         XrAction flashlight_action_ = XR_NULL_HANDLE;
         XrAction grip_action_ = XR_NULL_HANDLE;
         XrAction menu_action_ = XR_NULL_HANDLE;
-        XrAction index_menu_force_action_ = XR_NULL_HANDLE;
         std::array<XrPath, 2> hand_paths_{};
         XrPath touch_interaction_profile_ = XR_NULL_PATH;
         XrPath index_interaction_profile_ = XR_NULL_PATH;
@@ -132,6 +136,7 @@ namespace afvr
         XrEnvironmentBlendMode environment_blend_mode_ = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         bool session_running_ = false;
         bool exit_requested_ = false;
+        bool steamvr_runtime_ = false;
         bool display_refresh_rate_supported_ = false;
         bool frame_waited_ = false;
         bool frame_begun_ = false;

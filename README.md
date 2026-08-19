@@ -31,6 +31,9 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 <p align="center">
   <img src="docs/oculus-touch-controls.png" alt="Visual mapping of the Oculus Touch controls for Alpine Faction VR">
 </p>
+<p align="center">
+  <img src="docs/valve-index-knuckles-controls.png" alt="Visual mapping of the Valve Index Knuckles controls for Alpine Faction VR">
+</p>
 
 ### Oculus Touch controls
 
@@ -39,10 +42,12 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Left thumbstick press:** Holster weapon
 - **Left X:** Reload
 - **Left Y:** Toggle flashlight/headlight
+- **Flashlight direction:** Follows the tracked HMD view direction
 - **Left grip:**
   - Use/interact normally
   - Grab the weapon support point for two-handed handling when close enough
-- **Left menu button:** Open/pause menu
+- **Left menu button:** Open/pause menu when using a native non-SteamVR OpenXR runtime
+- **SteamVR menu:** Hold left X and right A together for 0.6 seconds
 - **Right thumbstick left/right:** Smooth or snap turning, depending on launcher setting
 - **Right thumbstick up:** Previous weapon
 - **Right thumbstick down:** Next weapon
@@ -53,7 +58,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Right grip, then right trigger:** Alternate fire
 - **Right controller movement:** Aim and control the weapon
 - **Menu navigation:** Aim with the right controller and select with the right trigger
-- **Menu back:** Right B or left menu button
+- **Menu back:** Right B, the left menu button on a native runtime, or the SteamVR button chord
 
 ### Valve Index Knuckles controls
 
@@ -62,10 +67,11 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Left thumbstick press:** Holster weapon
 - **Left A:** Reload
 - **Left B:** Toggle flashlight/headlight
+- **Flashlight direction:** Follows the tracked HMD view direction
 - **Left squeeze/grip:**
   - Use/interact normally
   - Grab the weapon support point for two-handed handling when close enough
-- **Firm left trackpad press:** Open/pause menu
+- **SteamVR menu:** Hold left A and right A together for 0.6 seconds
 - **Right thumbstick left/right:** Smooth or snap turning, depending on launcher setting
 - **Right thumbstick up:** Previous weapon
 - **Right thumbstick down:** Next weapon
@@ -73,10 +79,27 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Right A:** Crouch
 - **Right B:** Jump
 - **Right trigger:** Primary fire
-- **Right squeeze/grip, then right trigger:** Alternate fire
+- **Left trigger:** Alternate fire
 - **Right controller movement:** Aim and control the weapon
 - **Menu navigation:** Aim with the right controller and select with the right trigger
-- **Menu back:** Right B or firm left-trackpad press
+- **Menu back:** Right B or hold both A buttons for 0.6 seconds
+
+### Turrets and vehicles
+
+- **Mounted turret / jeep gunner aim:** Move your head; the turret follows HMD yaw and pitch
+- **Vehicle movement / throttle:** Left thumbstick, relative to the vehicle rather than head direction
+- **Vehicle steering / pitch:** Right thumbstick
+- **Fire / alternate fire:** Touch uses right trigger / right grip plus right trigger; Index uses right trigger / left trigger
+- **Enter or exit:** Left grip (Use)
+- **Flashlight / vehicle headlight:** Left Y on Touch or left B on Index
+- Weapon cycling is suspended while mounted so right-stick pitch remains available to vehicles.
+
+### Room-scale movement and calibration
+
+- Physical HMD movement uses Red Faction's native swept-sphere world collision with a 16 cm head volume, including ordinary walls, invisible collision faces, and mover geometry.
+- When room-scale movement reaches a wall, the complete tracked rig—both eyes, hands, weapon, muzzle, and laser—is pushed back to the last safe position.
+- Turrets and vehicles keep their mounted movement rules and do not receive the on-foot room-scale collision correction.
+- Opening or closing a VR menu automatically recalibrates tracking yaw, physical height, and the room-scale origin from the current HMD pose.
 
 ## Removing the VR build
 

@@ -953,6 +953,34 @@ CodeInjection player_move_flashlight_light_patch {
         rf::Entity* ep = rf::local_player_entity;
         rf::Vector3 eye_pos = ep->eye_pos;
 
+        rf::Matrix3 head_orientation{};
+        if (afvr::get_head_pose(eye_pos, head_orientation)) {
+            rf::Vector3 direction = head_orientation.fvec;
+            direction.normalize_safe();
+            rf::Vector3 beam_end = eye_pos + direction *
+                g_local_headlamp_settings.max_range;
+            rf::LevelCollisionOut collision{};
+            collision.obj_handle = -1;
+            if (rf::collide_linesegment_level_for_multi(
+                    eye_pos, beam_end, ep, nullptr, &collision,
+                    0.0f, true, 1.0f)) {
+                // Keep the simulated bulb just in front of the obstruction so
+                // its radius illuminates the surface instead of landing behind it.
+                constexpr float surface_offset = 0.10f;
+                *pDest2 = collision.hit_point - direction * surface_offset;
+            }
+            else {
+                *pDest2 = beam_end;
+            }
+
+            static bool vr_headlamp_logged = false;
+            if (!vr_headlamp_logged) {
+                vr_headlamp_logged = true;
+                xlog::info(
+                    "[AFVR] Player headlamp placement follows the tracked HMD view ray");
+            }
+        }
+
         float dist = eye_pos.distance_to(*pDest2);
         float adjusted_range = rf::g_player_flashlight_range * sqrt(dist);
         regs.eax = adjusted_range;
