@@ -97,12 +97,12 @@ namespace afvr
     // use dedicated material chunks, allowing VR to keep the moving weapon.
     [[nodiscard]] bool should_render_fpgun_texture(int bitmap_handle);
 
-    // Independent gameplay fire point at the calibrated weapon muzzle. This is
-    // never derived from the separately calibrated visual laser emitter.
+    // Gameplay fire point synchronized to the resolved visual laser emitter.
+    // Position and orientation match the visible beam exactly for every gun.
     [[nodiscard]] bool get_weapon_muzzle_pose(rf::Vector3& position, rf::Matrix3& orientation);
 
-    // Final local projectile-creation pose. Every weapon uses the independent
-    // gameplay fire point; visual laser offsets never affect projectile spawn.
+    // Final local on-foot projectile-creation pose. Guns, grenades, and remote
+    // charges use the synchronized laser/fire position and orientation.
     [[nodiscard]] bool get_weapon_launch_pose(int weapon_type,
         rf::Vector3& position, rf::Matrix3& orientation);
 

@@ -389,6 +389,16 @@ FunHook<void(rf::Player*, bool, bool)> player_fire_primary_weapon_hook{
     },
 };
 
+bool is_local_vr_handheld_fire(rf::Entity* entity)
+{
+    return entity && rf::local_player && !rf::is_multi &&
+        afvr::is_session_running() &&
+        entity->handle == rf::local_player->entity_handle &&
+        !rf::entity_in_vehicle(entity) &&
+        !rf::entity_is_on_turret(entity) &&
+        !rf::entity_is_jeep_gunner(entity);
+}
+
 // player_fire_primary_weapon only handles the input transition. Automatic weapons
 // continue firing through entity_fire_weapon on later simulation ticks, after the
 // input hook has returned. Apply the VR pose at the shared firing seam so every
@@ -396,9 +406,7 @@ FunHook<void(rf::Player*, bool, bool)> player_fire_primary_weapon_hook{
 FunHook<void(rf::Entity*, int, int, int, int, int)> entity_fire_weapon_hook{
     0x00425830,
     [](rf::Entity* entity, int arg2, int arg3, int arg4, int arg5, int arg6) {
-        const bool is_local_vr_fire =
-            entity && rf::local_player && !rf::is_multi && afvr::is_session_running() &&
-            entity->handle == rf::local_player->entity_handle;
+        const bool is_local_vr_fire = is_local_vr_handheld_fire(entity);
 
         rf::Vector3 saved_eye_position{};
         rf::Matrix3 saved_eye_orientation{};
@@ -461,11 +469,20 @@ FunHook<void(rf::Entity*, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 entity, weapon_type, position, orientation,
                 fire_point_index, primary_fire);
 
-            const bool is_local_vr_fire =
-                entity && position && orientation && rf::local_player &&
-                !rf::is_multi && afvr::is_session_running() &&
-                entity->handle == rf::local_player->entity_handle;
+            const bool is_local_vr_fire = position && orientation &&
+                is_local_vr_handheld_fire(entity);
             if (!is_local_vr_fire) {
+                if (entity && position && orientation &&
+                    afvr::is_session_running() &&
+                    rf::entity_is_local_player_or_player_attached(entity)) {
+                    static bool mounted_native_fire_logged = false;
+                    if (!mounted_native_fire_logged) {
+                        mounted_native_fire_logged = true;
+                        xlog::info(
+                            "[AFVR][MOUNTED_FIRE] Vehicle/turret weapon retains native host muzzle transform at ({:.4f},{:.4f},{:.4f})",
+                            position->x, position->y, position->z);
+                    }
+                }
                 return;
             }
 
@@ -498,50 +515,37 @@ FunHook<void(rf::Entity*, int, rf::Vector3*, rf::Matrix3*, int, int)>
         },
     };
 
-bool is_vr_head_aimed_launch_weapon(int weapon_type)
-{
-    // Only actual throwables retain head-directed launches. The flamethrower
-    // is a supported two-hand gun and must follow the solved weapon barrel.
-    return weapon_type == rf::grenade_weapon_type ||
-        weapon_type == rf::remote_charge_weapon_type;
-}
-
 // Projectile weapons can replace the eye transform prepared by entity_fire_weapon
 // with an authored body/muzzle tag before reaching this factory. Override every
-// local SP projectile at the final creation seam. Grenades and remote charges
-// deliberately retain their six-degree HMD direction; guns, including the
-// flamethrower, follow the solved one/two-hand weapon pose.
+// local on-foot SP projectile at the final creation seam. Guns, grenades, C4,
+// and the flamethrower all follow the same synchronized laser/fire transform.
+// Vehicle and turret projectiles retain their native host muzzle transform.
 FunHook<rf::Weapon*(int, int, const rf::Vector3&, const rf::Matrix3&, int, int)>
     weapon_create_hook{
         0x004C77A0,
         [](int weapon_type, int parent_handle, const rf::Vector3& position,
             const rf::Matrix3& orientation, int arg5, int arg6) {
-            if (!rf::is_multi && rf::local_player && afvr::is_session_running() &&
-                parent_handle == rf::local_player->entity_handle) {
+            rf::Entity* local_entity = rf::local_player
+                ? rf::entity_from_handle(rf::local_player->entity_handle)
+                : nullptr;
+            if (is_local_vr_handheld_fire(local_entity) &&
+                parent_handle == local_entity->handle) {
                 rf::Vector3 launch_position{};
                 rf::Matrix3 weapon_orientation{};
                 if (afvr::get_weapon_launch_pose(
                         weapon_type, launch_position, weapon_orientation)) {
-                    rf::Vector3 head_position{};
-                    rf::Matrix3 head_orientation{};
-                    const bool use_head_aim =
-                        is_vr_head_aimed_launch_weapon(weapon_type) &&
-                        afvr::get_head_pose(head_position, head_orientation);
-                    const rf::Matrix3& launch_orientation = use_head_aim
-                        ? head_orientation : weapon_orientation;
                     static std::array<bool, 64> launch_override_logged{};
                     if (weapon_type >= 0 &&
                         weapon_type < static_cast<int>(launch_override_logged.size()) &&
                         !launch_override_logged[weapon_type]) {
                         launch_override_logged[weapon_type] = true;
                         xlog::info(
-                            "[AFVR] Weapon {} launch uses independent calibrated fire origin and {} direction",
-                            weapon_type,
-                            use_head_aim ? "six-degree HMD" : "tracked weapon");
+                            "[AFVR] Weapon {} launch uses synchronized laser/fire origin and direction",
+                            weapon_type);
                     }
                     return weapon_create_hook.call_target(
                         weapon_type, parent_handle, launch_position,
-                        launch_orientation, arg5, arg6);
+                        weapon_orientation, arg5, arg6);
                 }
             }
             return weapon_create_hook.call_target(

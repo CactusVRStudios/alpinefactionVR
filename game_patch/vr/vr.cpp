@@ -1685,26 +1685,12 @@ namespace afvr
 
             g_right_controller_orientation = solved_aim_orientation;
 
-            // Muzzle position follows the visual weapon. Apply one small shared
-            // horizontal correction to the platform aim pose; live testing found
-            // the uncorrected Quest Touch ray consistently landed to the right.
-            g_weapon_fire_position = g_weapon_render_position + transform_direction(
-                g_weapon_render_orientation, calibration.muzzle_position);
-            constexpr float degrees_to_radians = 0.0174532925199f;
-            const rf::Matrix3 muzzle_orientation = compose_orientation(
-                solved_aim_orientation,
-                euler_rotation_matrix(calibration.muzzle_rotation));
-            g_weapon_fire_orientation = compose_orientation(
-                muzzle_orientation,
-                euler_rotation_matrix({
-                    0.0f,
-                    g_weapon_aim_yaw_correction_degrees * degrees_to_radians,
-                    0.0f,
-                }));
-
             // The visible weapon root is authoritative. Resolve the dedicated
             // weapon-local laser attachment only after one/two-hand blending so
-            // the beam cannot drift back to the raw controller pose.
+            // the beam cannot drift back to the raw controller pose. The laser
+            // calibration is also the explicitly selected gameplay fire point:
+            // shots must begin on the visible beam and travel along that exact
+            // beam direction for every weapon.
             g_laser_emitter_position = g_weapon_render_position +
                 transform_direction(g_weapon_render_orientation,
                     calibration.laser_position);
@@ -1715,6 +1701,8 @@ namespace afvr
                 laser_muzzle_orientation,
                 euler_rotation_matrix(calibration.laser_rotation));
             g_laser_emitter_pose_valid = true;
+            g_weapon_fire_position = g_laser_emitter_position;
+            g_weapon_fire_orientation = g_laser_emitter_orientation;
 
             if (g_current_weapon_id >= 0 &&
                 g_current_weapon_id < static_cast<int>(g_weapon_calibration_logged.size()) &&
@@ -1762,6 +1750,13 @@ namespace afvr
 
             const rf::Vector3 fire_direction = normalized_or(
                 g_weapon_fire_orientation.fvec, {0.0f, 0.0f, 1.0f});
+            const rf::Vector3 laser_direction = normalized_or(
+                g_laser_emitter_orientation.fvec, {0.0f, 0.0f, 1.0f});
+            const float direction_alignment = std::clamp(
+                fire_direction.dot_prod(laser_direction), -1.0f, 1.0f);
+            constexpr float radians_to_degrees = 57.2957795131f;
+            const float direction_delta_degrees =
+                std::acos(direction_alignment) * radians_to_degrees;
             rf::Vector3 close_trace_end =
                 g_weapon_fire_position + fire_direction * 2.0f;
             rf::LevelCollisionOut collision{};
@@ -1778,13 +1773,14 @@ namespace afvr
                 g_laser_emitter_position - g_weapon_fire_position;
 
             xlog::info(
-                "[AFVR][FIRE_ORIGIN] weapon={} fire=({:.4f},{:.4f},{:.4f}) laser=({:.4f},{:.4f},{:.4f}) laser_delta=({:.4f},{:.4f},{:.4f}) independent=true close_ray_hit={} object={} distance={:.3f}m",
+                "[AFVR][FIRE_ORIGIN] weapon={} fire=({:.4f},{:.4f},{:.4f}) laser=({:.4f},{:.4f},{:.4f}) laser_delta=({:.4f},{:.4f},{:.4f}) direction_delta={:.4f}deg synchronized=true close_ray_hit={} object={} distance={:.3f}m",
                 weapon_id,
                 g_weapon_fire_position.x, g_weapon_fire_position.y,
                 g_weapon_fire_position.z,
                 g_laser_emitter_position.x, g_laser_emitter_position.y,
                 g_laser_emitter_position.z,
                 laser_delta.x, laser_delta.y, laser_delta.z,
+                direction_delta_degrees,
                 close_trace_hit, collision.obj_handle, close_hit_distance);
             if (print_to_console) {
                 rf::console::print(
@@ -1795,6 +1791,9 @@ namespace afvr
                     "VR visual laser: {:.3f} {:.3f} {:.3f} (separation {:.3f} m)",
                     g_laser_emitter_position.x, g_laser_emitter_position.y,
                     g_laser_emitter_position.z, laser_delta.len());
+                rf::console::print(
+                    "Fire/laser direction difference: {:.4f} degrees",
+                    direction_delta_degrees);
                 rf::console::print(
                     "2 m fire ray: {} object {} at {:.3f} m",
                     close_trace_hit ? "hit" : "clear",
@@ -1957,9 +1956,9 @@ namespace afvr
                 return;
             }
 
-            // These markers intentionally use independent source positions:
-            // green is the gameplay fire point, blue is the visual laser
-            // emitter, and yellow only visualizes the separation between them.
+            // Keep separate markers so synchronization remains directly
+            // testable: green is the gameplay fire point, blue is the visual
+            // laser emitter, and yellow exposes any unexpected separation.
             constexpr float fire_marker_half_size = 0.08f;
             constexpr float laser_marker_half_size = 0.05f;
             constexpr float marker_half_width = 0.004f;
@@ -1985,6 +1984,18 @@ namespace afvr
             render_d3d11_world_debug_beam(
                 g_weapon_fire_position, g_laser_emitter_position,
                 separation_color, marker_half_width * 0.5f);
+            const rf::Vector3 fire_direction = normalized_or(
+                g_weapon_fire_orientation.fvec, {0.0f, 0.0f, 1.0f});
+            const rf::Vector3 laser_direction = normalized_or(
+                g_laser_emitter_orientation.fvec, {0.0f, 0.0f, 1.0f});
+            render_d3d11_world_debug_beam(
+                g_weapon_fire_position,
+                g_weapon_fire_position + fire_direction * 0.50f,
+                fire_color, marker_half_width);
+            render_d3d11_world_debug_beam(
+                g_laser_emitter_position,
+                g_laser_emitter_position + laser_direction * 0.42f,
+                laser_color, marker_half_width * 0.75f);
         }
 
         float conservative_cpu_horizontal_fov(const XrFovf& fov)
@@ -4329,8 +4340,8 @@ namespace afvr
             !g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
             return false;
         }
-        // Projectile creation is gameplay. It always uses the independently
-        // calibrated fire point and can never inherit the visual laser emitter.
+        // Projectile creation uses the same resolved position and orientation
+        // as the visual laser so close targets cannot fall between two origins.
         (void)weapon_type;
         position = g_weapon_fire_position;
         orientation = g_weapon_fire_orientation;
