@@ -80,8 +80,9 @@ struct GameConfig
     CfgVar<bool> vr_enabled = true;
     CfgVar<bool> vr_fast_weapon_switch = false;
     CfgVar<bool> vr_shake_reload = false;
-    CfgVar<unsigned> vr_shake_reload_threshold_cm_s{
-        180, [](auto val) { return std::clamp(val, 80u, 400u); }};
+    // User-tunable downward controller speed in cm/s. Keep the default
+    // conservative, but do not impose a lower bound on experimentation.
+    CfgVar<unsigned> vr_shake_reload_threshold_cm_s = 180;
     enum class VrTurnMode
     {
         snap = 0,

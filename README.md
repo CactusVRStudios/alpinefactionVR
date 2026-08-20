@@ -88,7 +88,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Menu navigation:** Aim with the right controller and select with the right trigger
 - **Menu back:** Right B or hold both A buttons for 0.6 seconds
 
-Shake to reload is disabled by default. Enable it in the launcher under **Options → VR / OpenXR**; the downward-motion threshold can be adjusted there in cm/s.
+Shake to reload is disabled by default. Enable it in the launcher under **Options → VR / OpenXR**; the downward-motion threshold can be adjusted freely there in cm/s. Lower values are more sensitive.
 
 ### Turrets and vehicles
 

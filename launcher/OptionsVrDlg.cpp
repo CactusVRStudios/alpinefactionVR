@@ -44,7 +44,7 @@ BOOL OptionsVrDlg::OnInitDialog()
     m_tool_tip.AddTool(GetDlgItem(IDC_VR_SHAKE_RELOAD_CHECK),
         "Reload by making one forceful downward shake with the right controller.");
     m_tool_tip.AddTool(GetDlgItem(IDC_VR_SHAKE_RELOAD_THRESHOLD_EDIT),
-        "Downward controller speed required to trigger shake reload (80 to 400 cm/s).");
+        "Downward controller speed required to trigger shake reload (cm/s; lower values are more sensitive).");
     return TRUE;
 }
 
