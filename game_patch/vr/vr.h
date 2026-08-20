@@ -97,13 +97,12 @@ namespace afvr
     // use dedicated material chunks, allowing VR to keep the moving weapon.
     [[nodiscard]] bool should_render_fpgun_texture(int bitmap_handle);
 
-    // Latest calibrated weapon muzzle position plus OpenXR aim orientation in
-    // RF world space, used by local fire paths.
+    // Independent gameplay fire point at the calibrated weapon muzzle. This is
+    // never derived from the separately calibrated visual laser emitter.
     [[nodiscard]] bool get_weapon_muzzle_pose(rf::Vector3& position, rf::Matrix3& orientation);
 
-    // Final local projectile-creation pose. Rocket and rail projectiles use
-    // their visually calibrated laser/muzzle emitter; other weapons retain
-    // the established firing pose.
+    // Final local projectile-creation pose. Every weapon uses the independent
+    // gameplay fire point; visual laser offsets never affect projectile spawn.
     [[nodiscard]] bool get_weapon_launch_pose(int weapon_type,
         rf::Vector3& position, rf::Matrix3& orientation);
 

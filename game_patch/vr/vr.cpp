@@ -133,8 +133,8 @@ namespace afvr
         int g_weapon_render_eye = -1;
         rf::Vector3 g_weapon_render_position{};
         rf::Matrix3 g_weapon_render_orientation{};
-        rf::Vector3 g_weapon_aim_position{};
-        rf::Matrix3 g_weapon_aim_orientation{};
+        rf::Vector3 g_weapon_fire_position{};
+        rf::Matrix3 g_weapon_fire_orientation{};
         bool g_laser_emitter_pose_valid = false;
         rf::Vector3 g_laser_emitter_position{};
         rf::Matrix3 g_laser_emitter_orientation{};
@@ -1687,13 +1687,13 @@ namespace afvr
             // Muzzle position follows the visual weapon. Apply one small shared
             // horizontal correction to the platform aim pose; live testing found
             // the uncorrected Quest Touch ray consistently landed to the right.
-            g_weapon_aim_position = g_weapon_render_position + transform_direction(
+            g_weapon_fire_position = g_weapon_render_position + transform_direction(
                 g_weapon_render_orientation, calibration.muzzle_position);
             constexpr float degrees_to_radians = 0.0174532925199f;
             const rf::Matrix3 muzzle_orientation = compose_orientation(
                 solved_aim_orientation,
                 euler_rotation_matrix(calibration.muzzle_rotation));
-            g_weapon_aim_orientation = compose_orientation(
+            g_weapon_fire_orientation = compose_orientation(
                 muzzle_orientation,
                 euler_rotation_matrix({
                     0.0f,
@@ -1738,6 +1738,69 @@ namespace afvr
             return !rf::weapon_is_melee(g_current_weapon_id);
         }
 
+        void audit_weapon_fire_origin(bool print_to_console)
+        {
+            static std::array<bool, 64> automatically_logged{};
+            const int weapon_id = g_current_weapon_id;
+            if (!g_weapon_pose_valid || !g_weapon_aim_pose_valid ||
+                weapon_id < 0) {
+                if (print_to_console) {
+                    rf::console::print(
+                        "VR fire-origin audit requires a tracked equipped weapon");
+                }
+                return;
+            }
+            if (!print_to_console &&
+                weapon_id < static_cast<int>(automatically_logged.size()) &&
+                automatically_logged[weapon_id]) {
+                return;
+            }
+            if (weapon_id < static_cast<int>(automatically_logged.size())) {
+                automatically_logged[weapon_id] = true;
+            }
+
+            const rf::Vector3 fire_direction = normalized_or(
+                g_weapon_fire_orientation.fvec, {0.0f, 0.0f, 1.0f});
+            rf::Vector3 close_trace_end =
+                g_weapon_fire_position + fire_direction * 2.0f;
+            rf::LevelCollisionOut collision{};
+            collision.obj_handle = -1;
+            rf::Object* local_entity = rf::local_player
+                ? rf::entity_from_handle(rf::local_player->entity_handle)
+                : nullptr;
+            const bool close_trace_hit = rf::collide_linesegment_level_for_multi(
+                g_weapon_fire_position, close_trace_end,
+                local_entity, nullptr, &collision, 0.0f, true, 1.0f);
+            const float close_hit_distance = close_trace_hit
+                ? (collision.hit_point - g_weapon_fire_position).len() : 2.0f;
+            const rf::Vector3 laser_delta =
+                g_laser_emitter_position - g_weapon_fire_position;
+
+            xlog::info(
+                "[AFVR][FIRE_ORIGIN] weapon={} fire=({:.4f},{:.4f},{:.4f}) laser=({:.4f},{:.4f},{:.4f}) laser_delta=({:.4f},{:.4f},{:.4f}) independent=true close_ray_hit={} object={} distance={:.3f}m",
+                weapon_id,
+                g_weapon_fire_position.x, g_weapon_fire_position.y,
+                g_weapon_fire_position.z,
+                g_laser_emitter_position.x, g_laser_emitter_position.y,
+                g_laser_emitter_position.z,
+                laser_delta.x, laser_delta.y, laser_delta.z,
+                close_trace_hit, collision.obj_handle, close_hit_distance);
+            if (print_to_console) {
+                rf::console::print(
+                    "VR fire point: {:.3f} {:.3f} {:.3f}",
+                    g_weapon_fire_position.x, g_weapon_fire_position.y,
+                    g_weapon_fire_position.z);
+                rf::console::print(
+                    "VR visual laser: {:.3f} {:.3f} {:.3f} (separation {:.3f} m)",
+                    g_laser_emitter_position.x, g_laser_emitter_position.y,
+                    g_laser_emitter_position.z, laser_delta.len());
+                rf::console::print(
+                    "2 m fire ray: {} object {} at {:.3f} m",
+                    close_trace_hit ? "hit" : "clear",
+                    collision.obj_handle, close_hit_distance);
+            }
+        }
+
         void update_laser_trace()
         {
             g_laser_trace_frame = rf::frame_count;
@@ -1777,9 +1840,9 @@ namespace afvr
                 const auto& input = g_openxr->input_state();
                 const auto& grip_local = input.grip_poses[right_hand];
                 const auto& aim_local = input.aim_poses[right_hand];
-                const rf::Vector3 provisional_muzzle = g_weapon_aim_position;
+                const rf::Vector3 provisional_muzzle = g_weapon_fire_position;
                 const rf::Vector3 firing_direction = normalized_or(
-                    g_weapon_aim_orientation.fvec, {0.0f, 0.0f, 1.0f});
+                    g_weapon_fire_orientation.fvec, {0.0f, 0.0f, 1.0f});
                 const auto& calibration = weapon_calibration(g_current_weapon_id);
                 constexpr float radians_to_degrees = 57.2957795131f;
                 const rf::Vector3 laser_rotation_degrees =
@@ -3094,6 +3157,14 @@ namespace afvr
             "vr_laser_rotate <pitch|yaw|roll> <degrees>",
         };
 
+        ConsoleCommand2 g_vr_fire_origin_audit_cmd{
+            "vr_fire_origin_audit",
+            []() {
+                audit_weapon_fire_origin(true);
+            },
+            "Compare the independent gameplay fire point with the visual laser emitter and trace two metres forward",
+        };
+
         ConsoleCommand2 g_vr_aim_yaw_cmd{
             "vr_aim_yaw",
             [](float degrees) {
@@ -3248,6 +3319,7 @@ namespace afvr
         g_vr_muzzle_rotate_cmd.register_cmd();
         g_vr_laser_move_cmd.register_cmd();
         g_vr_laser_rotate_cmd.register_cmd();
+        g_vr_fire_origin_audit_cmd.register_cmd();
         g_vr_aim_yaw_cmd.register_cmd();
         g_vr_two_hand_calibrate_cmd.register_cmd();
         g_vr_weapon_calibration_cmd.register_cmd();
@@ -4192,8 +4264,9 @@ namespace afvr
             !g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
             return false;
         }
-        position = g_weapon_aim_position;
-        orientation = g_weapon_aim_orientation;
+        position = g_weapon_fire_position;
+        orientation = g_weapon_fire_orientation;
+        audit_weapon_fire_origin(false);
         return true;
 #else
         (void)position;
@@ -4210,16 +4283,12 @@ namespace afvr
             !g_weapon_pose_valid || !g_weapon_aim_pose_valid) {
             return false;
         }
-        const bool use_visual_muzzle_emitter =
-            weapon_type == rf::rocket_launcher_weapon_type ||
-            weapon_type == rf::rail_gun_weapon_type;
-        if (use_visual_muzzle_emitter && g_laser_emitter_pose_valid) {
-            position = g_laser_emitter_position;
-            orientation = g_laser_emitter_orientation;
-            return true;
-        }
-        position = g_weapon_aim_position;
-        orientation = g_weapon_aim_orientation;
+        // Projectile creation is gameplay. It always uses the independently
+        // calibrated fire point and can never inherit the visual laser emitter.
+        (void)weapon_type;
+        position = g_weapon_fire_position;
+        orientation = g_weapon_fire_orientation;
+        audit_weapon_fire_origin(false);
         return true;
 #else
         (void)weapon_type;

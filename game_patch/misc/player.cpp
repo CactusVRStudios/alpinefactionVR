@@ -477,20 +477,14 @@ FunHook<rf::Weapon*(int, int, const rf::Vector3&, const rf::Matrix3&, int, int)>
                         afvr::get_head_pose(head_position, head_orientation);
                     const rf::Matrix3& launch_orientation = use_head_aim
                         ? head_orientation : weapon_orientation;
-                    const bool uses_visual_muzzle_emitter =
-                        weapon_type == rf::rocket_launcher_weapon_type ||
-                        weapon_type == rf::rail_gun_weapon_type;
-
                     static std::array<bool, 64> launch_override_logged{};
                     if (weapon_type >= 0 &&
                         weapon_type < static_cast<int>(launch_override_logged.size()) &&
                         !launch_override_logged[weapon_type]) {
                         launch_override_logged[weapon_type] = true;
                         xlog::info(
-                            "[AFVR] Weapon {} launch uses {} origin and {} direction",
+                            "[AFVR] Weapon {} launch uses independent calibrated fire origin and {} direction",
                             weapon_type,
-                            uses_visual_muzzle_emitter
-                                ? "laser-calibrated visual muzzle" : "calibrated firing muzzle",
                             use_head_aim ? "six-degree HMD" : "tracked weapon");
                     }
                     return weapon_create_hook.call_target(
