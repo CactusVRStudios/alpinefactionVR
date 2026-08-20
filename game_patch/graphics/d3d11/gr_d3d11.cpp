@@ -661,6 +661,8 @@ namespace gr::d3d11
     {
         const bool vr_session_running = afvr::is_session_running();
         const bool vr_menu_active = afvr::is_menu_capture_active();
+        const bool vr_scope_active = afvr::is_scope_capture_active();
+        const bool vr_flat_quad_active = vr_menu_active || vr_scope_active;
         const bool vr_desktop_update = vr_session_running &&
             afvr::should_update_desktop_mirror();
         // Pace the CPU against the GPU's presentation queue before we do any
@@ -692,13 +694,13 @@ namespace gr::d3d11
         entity_shadow_renderer_->render_debug_overlay(context_);
         entity_shadow_renderer_->unbind_shadow_resources(context_);
         if (msaa_render_target_ &&
-            (!vr_session_running || vr_menu_active || vr_desktop_update)) {
+            (!vr_session_running || vr_flat_quad_active || vr_desktop_update)) {
             // Resolve MSAA into scene_texture_ unconditionally. The final copy to
             // back_buffer_ happens below — either via the gamma pass, or via a
             // CopyResource when the gamma pass is skipped.
             context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
         }
-        if (vr_session_running && !vr_menu_active && !vr_desktop_update) {
+        if (vr_session_running && !vr_flat_quad_active && !vr_desktop_update) {
             // The headset already received both projection images and the HUD
             // directly through OpenXR. Skip redundant desktop image work on
             // frames that are not part of the throttled monitor stream.
@@ -721,11 +723,14 @@ namespace gr::d3d11
             // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
             render_context_->invalidate_cached_state();
         }
-        // Alpine composes its final desktop image through scene resolve and the
-        // gamma pass. Submit the menu only after those steps so the OpenXR quad
-        // receives the exact pixels that are visible in the desktop window.
+        // Alpine composes its final native image through scene resolve and the
+        // gamma pass. Submit flat VR layers only after those steps so the
+        // OpenXR quad receives the exact RF menu or weapon-scope pixels.
         if (vr_menu_active) {
             afvr::submit_menu_frame();
+        }
+        else if (vr_scope_active) {
+            afvr::submit_scope_frame();
         }
 
         // Most headset frames never touch DXGI. The monitor is updated at about
@@ -1150,11 +1155,11 @@ namespace gr::d3d11
         else {
             context_->CopyResource(destination, back_buffer_);
         }
-        static bool menu_copy_logged = false;
-        if (!menu_copy_logged) {
-            menu_copy_logged = true;
+        static bool flat_quad_copy_logged = false;
+        if (!flat_quad_copy_logged) {
+            flat_quad_copy_logged = true;
             xlog::info(
-                "[AFVR] Menu quad copied from Alpine's final presented target (source format {}, destination format {})",
+                "[AFVR] OpenXR flat quad copied from Alpine's final presented target (source format {}, destination format {})",
                 static_cast<int>(source_desc.Format),
                 static_cast<int>(destination_desc.Format));
         }

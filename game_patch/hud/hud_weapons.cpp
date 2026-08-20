@@ -251,11 +251,35 @@ static bool is_mouse_wheel_down() {
         && !mouse_3_up_cool_down_timer.elapsed());
 }
 
+static void vr_apply_weapon_cycle_selection(rf::Player* player)
+{
+    if (!afvr::is_session_running() || !g_game_config.vr_fast_weapon_switch ||
+        !player || player != rf::local_player) {
+        return;
+    }
+    const int cycle_index = rf::hud_weapon_cycle_current_idx;
+    if (cycle_index < 0 || cycle_index >= 32) {
+        return;
+    }
+    const int weapon_type = rf::hud_weapon_cycle[cycle_index].weapon_type;
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return;
+    }
+
+    rf::player_make_weapon_current_selection(player, weapon_type);
+    rf::hud_render_weapon_cycle = false;
+    rf::hud_close_weapon_cycle_timer.invalidate();
+    xlog::info(
+        "[AFVR] Weapon cycle instantly equipped weapon {} without confirmation HUD",
+        weapon_type);
+}
+
 FunHook<void(rf::Player*, int, bool)> player_select_next_primary_hook{
     0x004A3770,
     [] (rf::Player* const player, const int a2, const bool play_sound) {
         if (!is_mouse_wheel_down() || rf::hud_render_weapon_cycle) {
             player_select_next_primary_hook.call_target(player, a2, play_sound);
+            vr_apply_weapon_cycle_selection(player);
         }
     },
 };
@@ -265,6 +289,7 @@ FunHook<void(rf::Player*, int, bool)> player_select_prev_primary_hook{
     [] (rf::Player* const player, const int a2, const bool play_sound) {
         if (!is_mouse_wheel_down() || rf::hud_render_weapon_cycle) {
             player_select_prev_primary_hook.call_target(player, a2, play_sound);
+            vr_apply_weapon_cycle_selection(player);
         }
     },
 };

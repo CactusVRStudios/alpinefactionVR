@@ -49,8 +49,9 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Left menu button:** Open/pause menu when using a native non-SteamVR OpenXR runtime
 - **SteamVR menu:** Hold left X and right A together for 0.6 seconds
 - **Right thumbstick left/right:** Smooth or snap turning, depending on launcher setting
-- **Right thumbstick up:** Previous weapon
-- **Right thumbstick down:** Next weapon
+- **Right thumbstick up:** Cycle to the previous weapon
+- **Right thumbstick down:** Cycle to the next weapon
+- **Fast weapon switch:** Optional launcher checkbox for instant cycling; off by default so the native selector remains available for weapons such as remote charges
 - **Right thumbstick press:** Toggle laser sight; default is off
 - **Right A:** Crouch
 - **Right B:** Jump
@@ -73,8 +74,9 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
   - Grab the weapon support point for two-handed handling when close enough
 - **SteamVR menu:** Hold left A and right A together for 0.6 seconds
 - **Right thumbstick left/right:** Smooth or snap turning, depending on launcher setting
-- **Right thumbstick up:** Previous weapon
-- **Right thumbstick down:** Next weapon
+- **Right thumbstick up:** Cycle to the previous weapon
+- **Right thumbstick down:** Cycle to the next weapon
+- **Fast weapon switch:** Optional launcher checkbox for instant cycling; off by default so the native selector remains available for weapons such as remote charges
 - **Right thumbstick press:** Toggle laser sight; default is off
 - **Right A:** Crouch
 - **Right B:** Jump
@@ -93,14 +95,30 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Enter or exit:** Left grip (Use)
 - **Flashlight / vehicle headlight:** Left Y on Touch or left B on Index
 - Weapon cycling is suspended while mounted so right-stick pitch remains available to vehicles.
+- Exiting a pitched vehicle such as the submarine clears residual vehicle pitch/roll while preserving the player's heading, keeping the on-foot horizon level.
 
-### Room-scale movement and calibration
+### Precision and sniper scopes
+
+- Alternate fire retains Red Faction's native zoom, reticle, and scope mask for the Precision Rifle and Sniper Rifle.
+- While zoomed, the completed native game image is presented as a comfortable head-following OpenXR quad instead of an incorrectly magnified stereo world.
+- Closing the scope, switching weapons, opening a menu, or leaving gameplay immediately restores normal stereoscopic VR.
+
+### Menus and interaction
+
+- Usable objects—including buttons, switches, doors, and vehicles—follow the physical HMD viewing direction.
+- Interaction overlays and activation use the same target.
+- Main, pause, and shared VR menus follow horizontal head yaw while remaining upright; head pitch and roll no longer move or tilt them.
+- Controller menu raycasting uses the currently displayed menu pose.
+
+### Room-scale movement
 
 - Physical HMD movement uses Red Faction's native swept-sphere world collision with a 16 cm head volume, including ordinary walls, invisible collision faces, and mover geometry.
 - When room-scale movement reaches a wall, the complete tracked rig—both eyes, hands, weapon, muzzle, and laser—is pushed back to the last safe position.
 - Smooth and snap turns pivot around the HMD's current physical room position. Walking away from the last calibration point no longer makes thumbstick turning orbit that old center.
 - Turrets and vehicles keep their mounted movement rules and do not receive the on-foot room-scale collision correction.
 - Opening or closing a VR menu automatically recalibrates tracking yaw, physical height, and the room-scale origin from the current HMD pose.
+- Headset-runtime recentering, including the Meta-button hold gesture, preserves the current game-space heading and tracked rig alignment instead of snapping back to native body yaw.
+- Buttons, switches, doors, vehicles, and other Use targets follow the HMD view direction. The interaction overlay and the actual activation query use the same tracked target.
 
 ## Removing the VR build
 
@@ -122,7 +140,7 @@ The pinned Khronos OpenXR SDK is fetched during configuration, and the 32-bit lo
 After building the OpenXR-enabled Release configuration, create both supported release artifacts with:
 
 ```powershell
-.\tools\make-vr-release.ps1 -Version "alpha-0.6" -BuildDir ".\build-afvr\bin\Release"
+.\tools\make-vr-release.ps1 -Version "alpha-0.7" -BuildDir ".\build-afvr\bin\Release"
 ```
 
 The script always creates a basic ZIP and, when Inno Setup 6 and the patch payload in `setup/patches/output` are available, a one-step installer. Use `-SkipInstaller` when only the ZIP is needed.

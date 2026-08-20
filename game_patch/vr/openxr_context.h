@@ -81,7 +81,9 @@ namespace afvr
         [[nodiscard]] bool render_frame(const OpenXrEyeRenderCallback& render_eye,
             const OpenXrHudRenderCallback& render_hud = {});
         [[nodiscard]] bool render_menu_frame(const OpenXrMenuRenderCallback& render_menu);
+        [[nodiscard]] bool render_scope_frame(const OpenXrMenuRenderCallback& render_scope);
         void set_menu_active(bool active);
+        void set_scope_active(bool active);
         void set_hud_active(bool active);
         [[nodiscard]] bool get_menu_pointer(float& u, float& v) const;
         void shutdown();
@@ -104,6 +106,9 @@ namespace afvr
         void destroy_swapchains();
         void locate_hand_poses(XrTime time);
         void handle_session_state_changed(const XrEventDataSessionStateChanged& event);
+        void handle_reference_space_change_pending(
+            const XrEventDataReferenceSpaceChangePending& event);
+        void activate_pending_reference_space(XrTime locate_time);
 
         void check(XrResult result, const char* operation) const;
 
@@ -111,6 +116,13 @@ namespace afvr
         XrSystemId system_id_ = XR_NULL_SYSTEM_ID;
         XrSession session_ = XR_NULL_HANDLE;
         XrSpace reference_space_ = XR_NULL_HANDLE;
+        XrPosef reference_space_pose_in_natural_{
+            {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        XrSpace pending_reference_space_ = XR_NULL_HANDLE;
+        XrPosef pending_reference_space_pose_in_natural_{
+            {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        XrTime pending_reference_space_change_time_ = 0;
+        std::vector<XrSpace> retired_reference_spaces_;
         XrActionSet gameplay_action_set_ = XR_NULL_HANDLE;
         XrAction left_thumbstick_action_ = XR_NULL_HANDLE;
         XrAction right_thumbstick_action_ = XR_NULL_HANDLE;
@@ -184,10 +196,14 @@ namespace afvr
         QuadSwapchain menu_swapchain_;
         QuadSwapchain hud_swapchain_;
         bool menu_active_ = false;
+        bool scope_active_ = false;
         bool hud_active_ = false;
         bool menu_pose_valid_ = false;
         XrPosef menu_pose_{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        XrVector3f menu_anchor_position_{0.0f, 0.0f, 0.0f};
+        XrVector3f menu_horizontal_forward_{0.0f, 0.0f, -1.0f};
         bool first_menu_layer_logged_ = false;
+        bool first_scope_layer_logged_ = false;
         bool first_hud_layer_logged_ = false;
     };
 }

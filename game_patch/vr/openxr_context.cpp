@@ -94,6 +94,8 @@ namespace afvr
 
         constexpr float menu_distance_m = 1.5f;
         constexpr float menu_width_m = 1.6f;
+        constexpr float scope_distance_m = 1.5f;
+        constexpr float scope_width_m = 1.6f;
         constexpr float hud_distance_m = 2.4f;
         constexpr float hud_width_m = 2.75f;
 
@@ -115,6 +117,83 @@ namespace afvr
                 v.y + 2.0f * (q.w * uv.y + uuv.y),
                 v.z + 2.0f * (q.w * uv.z + uuv.z),
             };
+        }
+
+        bool horizontal_forward_from_pose(
+            const XrPosef& pose, XrVector3f& horizontal_forward)
+        {
+            // OpenXR view forward is local -Z and tracking-space +Y is up.
+            // Projecting that vector avoids extracting Euler angles from the
+            // runtime quaternion and therefore cannot carry pitch or roll into
+            // the menu pose.
+            const XrVector3f forward = rotate_vector(
+                pose.orientation, {0.0f, 0.0f, -1.0f});
+            const float horizontal_length_squared =
+                forward.x * forward.x + forward.z * forward.z;
+            if (horizontal_length_squared <= 0.000001f) {
+                return false;
+            }
+            const float inverse_length =
+                1.0f / std::sqrt(horizontal_length_squared);
+            horizontal_forward = {
+                forward.x * inverse_length, 0.0f, forward.z * inverse_length};
+            return true;
+        }
+
+        XrQuaternionf yaw_only_orientation_from_forward(
+            const XrVector3f& horizontal_forward)
+        {
+            // Rotate local -Z onto the tracking-space horizontal forward vector.
+            // With that convention the quad's local +Z normal points back toward
+            // the HMD, matching the already working OpenXR quad facing convention;
+            // no corrective 180-degree rotation is needed.
+            const float yaw = std::atan2(
+                -horizontal_forward.x, -horizontal_forward.z);
+            const float half_yaw = yaw * 0.5f;
+            return {0.0f, std::sin(half_yaw), 0.0f, std::cos(half_yaw)};
+        }
+
+        XrQuaternionf multiply_quaternion(
+            const XrQuaternionf& lhs, const XrQuaternionf& rhs)
+        {
+            return {
+                lhs.w * rhs.x + lhs.x * rhs.w +
+                    lhs.y * rhs.z - lhs.z * rhs.y,
+                lhs.w * rhs.y - lhs.x * rhs.z +
+                    lhs.y * rhs.w + lhs.z * rhs.x,
+                lhs.w * rhs.z + lhs.x * rhs.y -
+                    lhs.y * rhs.x + lhs.z * rhs.w,
+                lhs.w * rhs.w - lhs.x * rhs.x -
+                    lhs.y * rhs.y - lhs.z * rhs.z,
+            };
+        }
+
+        XrPosef compose_pose(const XrPosef& base, const XrPosef& relative)
+        {
+            const XrVector3f rotated_position =
+                rotate_vector(base.orientation, relative.position);
+            return {
+                multiply_quaternion(base.orientation, relative.orientation),
+                {
+                    base.position.x + rotated_position.x,
+                    base.position.y + rotated_position.y,
+                    base.position.z + rotated_position.z,
+                },
+            };
+        }
+
+        XrPosef inverse_pose(const XrPosef& pose)
+        {
+            const XrQuaternionf inverse_orientation{
+                -pose.orientation.x,
+                -pose.orientation.y,
+                -pose.orientation.z,
+                pose.orientation.w,
+            };
+            const XrVector3f inverse_position = rotate_vector(
+                inverse_orientation,
+                {-pose.position.x, -pose.position.y, -pose.position.z});
+            return {inverse_orientation, inverse_position};
         }
     }
 
@@ -362,7 +441,7 @@ namespace afvr
 
         XrReferenceSpaceCreateInfo create_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
         create_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
-        create_info.poseInReferenceSpace.orientation.w = 1.0f;
+        create_info.poseInReferenceSpace = reference_space_pose_in_natural_;
         check(xrCreateReferenceSpace(session_, &create_info, &reference_space_),
             "xrCreateReferenceSpace(LOCAL)");
         xlog::info("[AFVR] Reference space: LOCAL");
@@ -958,6 +1037,11 @@ namespace afvr
                     handle_session_state_changed(
                         reinterpret_cast<const XrEventDataSessionStateChanged&>(event));
                     break;
+                case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
+                    handle_reference_space_change_pending(
+                        reinterpret_cast<
+                            const XrEventDataReferenceSpaceChangePending&>(event));
+                    break;
 #ifdef XR_FB_display_refresh_rate
                 case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB: {
                     const auto& refresh_event =
@@ -978,6 +1062,78 @@ namespace afvr
         }
 
         return !exit_requested_;
+    }
+
+    void OpenXrContext::handle_reference_space_change_pending(
+        const XrEventDataReferenceSpaceChangePending& event)
+    {
+        if ((event.session != XR_NULL_HANDLE && event.session != session_) ||
+            event.referenceSpaceType != XR_REFERENCE_SPACE_TYPE_LOCAL) {
+            return;
+        }
+        if (!event.poseValid) {
+            xlog::warn(
+                "[AFVR] LOCAL reference space will change without a valid continuity pose; runtime recenter cannot be compensated exactly");
+            return;
+        }
+
+        if (pending_reference_space_ != XR_NULL_HANDLE) {
+            const XrResult destroy_result =
+                xrDestroySpace(pending_reference_space_);
+            if (XR_FAILED(destroy_result)) {
+                xlog::warn(
+                    "[AFVR] Replacing pending LOCAL space failed to destroy the older candidate ({})",
+                    static_cast<int>(destroy_result));
+            }
+            pending_reference_space_ = XR_NULL_HANDLE;
+        }
+
+        // poseInPreviousSpace maps the new natural LOCAL coordinates into the
+        // previous natural LOCAL coordinates. Apply its inverse to our current
+        // application-space origin so the replacement reference space keeps
+        // returning the same coordinates after the runtime recenter takes effect.
+        pending_reference_space_pose_in_natural_ = compose_pose(
+            inverse_pose(event.poseInPreviousSpace),
+            reference_space_pose_in_natural_);
+        XrReferenceSpaceCreateInfo create_info{
+            XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        create_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        create_info.poseInReferenceSpace =
+            pending_reference_space_pose_in_natural_;
+        const XrResult create_result = xrCreateReferenceSpace(
+            session_, &create_info, &pending_reference_space_);
+        if (XR_FAILED(create_result)) {
+            pending_reference_space_ = XR_NULL_HANDLE;
+            xlog::warn(
+                "[AFVR] Could not create compensated LOCAL reference space ({}); runtime recenter will use native behavior",
+                static_cast<int>(create_result));
+            return;
+        }
+        pending_reference_space_change_time_ = event.changeTime;
+        xlog::info(
+            "[AFVR] Runtime LOCAL recenter detected; continuity space prepared for change time {}",
+            event.changeTime);
+    }
+
+    void OpenXrContext::activate_pending_reference_space(XrTime locate_time)
+    {
+        if (pending_reference_space_ == XR_NULL_HANDLE ||
+            locate_time < pending_reference_space_change_time_) {
+            return;
+        }
+
+        if (reference_space_ != XR_NULL_HANDLE) {
+            // Projection layers from earlier frames may still refer to this
+            // handle inside the runtime. Retain it until session shutdown.
+            retired_reference_spaces_.push_back(reference_space_);
+        }
+        reference_space_ = pending_reference_space_;
+        reference_space_pose_in_natural_ =
+            pending_reference_space_pose_in_natural_;
+        pending_reference_space_ = XR_NULL_HANDLE;
+        pending_reference_space_change_time_ = 0;
+        xlog::info(
+            "[AFVR] Runtime LOCAL recenter compensated; HMD, hands, interaction ray, and artificial yaw remain continuous");
     }
 
     void OpenXrContext::handle_session_state_changed(const XrEventDataSessionStateChanged& event)
@@ -1155,6 +1311,7 @@ namespace afvr
         bool frame_begun = frame_begun_;
         bool hud_image_acquired = false;
         const XrTime predicted_display_time = frame_state.predictedDisplayTime;
+        activate_pending_reference_space(predicted_display_time);
         try {
             std::array<XrCompositionLayerProjectionView, 2> projection_views{};
             std::array<const XrCompositionLayerBaseHeader*, 2> submitted_layers{};
@@ -1387,6 +1544,18 @@ namespace afvr
         }
         menu_active_ = active;
         menu_pose_valid_ = false;
+        menu_anchor_position_ = {0.0f, 0.0f, 0.0f};
+        menu_horizontal_forward_ = {0.0f, 0.0f, -1.0f};
+    }
+
+    void OpenXrContext::set_scope_active(bool active)
+    {
+        if (scope_active_ == active) {
+            return;
+        }
+        scope_active_ = active;
+        xlog::info("[AFVR] Native weapon scope quad {}",
+            active ? "enabled" : "hidden");
     }
 
     void OpenXrContext::set_hud_active(bool active)
@@ -1456,6 +1625,7 @@ namespace afvr
         bool frame_begun = frame_begun_;
         bool image_acquired = false;
         uint32_t image_index = 0;
+        activate_pending_reference_space(frame_state.predictedDisplayTime);
         try {
             const XrCompositionLayerBaseHeader* submitted_layer = nullptr;
             XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -1480,17 +1650,30 @@ namespace afvr
                     center_pose.position.y = (views[0].pose.position.y + views[1].pose.position.y) * 0.5f;
                     center_pose.position.z = (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
                     if (!menu_pose_valid_) {
-                        menu_pose_ = center_pose;
-                        const XrVector3f forward = rotate_vector(
-                            center_pose.orientation, {0.0f, 0.0f, -menu_distance_m});
-                        menu_pose_.position.x += forward.x;
-                        menu_pose_.position.y += forward.y;
-                        menu_pose_.position.z += forward.z;
+                        menu_anchor_position_ = center_pose.position;
+                        (void)horizontal_forward_from_pose(
+                            center_pose, menu_horizontal_forward_);
                         menu_pose_valid_ = true;
                         xlog::info(
-                            "[AFVR] RF menu quad anchored {:.1f} m ahead of the HMD; width {:.3f} m",
+                            "[AFVR] RF menu quad yaw-follow enabled {:.1f} m from its stable tracking-space anchor; width {:.3f} m",
                             menu_distance_m, menu_width_m);
                     }
+                    else {
+                        // At an exactly vertical view direction the horizontal
+                        // projection is undefined. Retain the previous yaw rather
+                        // than allowing the menu to jump to an arbitrary heading.
+                        (void)horizontal_forward_from_pose(
+                            center_pose, menu_horizontal_forward_);
+                    }
+                    menu_pose_.orientation = yaw_only_orientation_from_forward(
+                        menu_horizontal_forward_);
+                    menu_pose_.position = {
+                        menu_anchor_position_.x +
+                            menu_horizontal_forward_.x * menu_distance_m,
+                        menu_anchor_position_.y,
+                        menu_anchor_position_.z +
+                            menu_horizontal_forward_.z * menu_distance_m,
+                    };
 
                     XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
                     const auto menu_wait_start = std::chrono::steady_clock::now();
@@ -1577,6 +1760,142 @@ namespace afvr
         }
     }
 
+    bool OpenXrContext::render_scope_frame(const OpenXrMenuRenderCallback& render_scope)
+    {
+        if (!session_running_ || exit_requested_ || !scope_active_ ||
+            menu_swapchain_.handle == XR_NULL_HANDLE) {
+            return false;
+        }
+        if (!frame_waited_ && !wait_frame()) {
+            return false;
+        }
+
+        const XrFrameState frame_state = waited_frame_state_;
+        frame_waited_ = false;
+        bool frame_begun = frame_begun_;
+        bool image_acquired = false;
+        uint32_t image_index = 0;
+        activate_pending_reference_space(frame_state.predictedDisplayTime);
+        try {
+            const XrCompositionLayerBaseHeader* submitted_layer = nullptr;
+            XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+            if (frame_state.shouldRender) {
+                XrViewLocateInfo locate_info{XR_TYPE_VIEW_LOCATE_INFO};
+                locate_info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                locate_info.displayTime = frame_state.predictedDisplayTime;
+                locate_info.space = reference_space_;
+                XrViewState view_state{XR_TYPE_VIEW_STATE};
+                std::array<XrView, 2> views{XrView{XR_TYPE_VIEW}, XrView{XR_TYPE_VIEW}};
+                uint32_t view_count = 0;
+                check(xrLocateViews(session_, &locate_info, &view_state,
+                    static_cast<uint32_t>(views.size()), &view_count, views.data()),
+                    "xrLocateViews(scope)");
+                constexpr XrViewStateFlags required_flags =
+                    XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+                if (view_count == views.size() &&
+                    (view_state.viewStateFlags & required_flags) == required_flags) {
+                    locate_hand_poses(frame_state.predictedDisplayTime);
+                    XrPosef center_pose = views[0].pose;
+                    center_pose.position.x =
+                        (views[0].pose.position.x + views[1].pose.position.x) * 0.5f;
+                    center_pose.position.y =
+                        (views[0].pose.position.y + views[1].pose.position.y) * 0.5f;
+                    center_pose.position.z =
+                        (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
+
+                    XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                    const auto image_wait_start = std::chrono::steady_clock::now();
+                    check(xrAcquireSwapchainImage(menu_swapchain_.handle,
+                        &acquire_info, &image_index), "xrAcquireSwapchainImage(scope)");
+                    image_acquired = true;
+                    XrSwapchainImageWaitInfo image_wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                    image_wait.timeout = XR_INFINITE_DURATION;
+                    check(xrWaitSwapchainImage(menu_swapchain_.handle, &image_wait),
+                        "xrWaitSwapchainImage(scope)");
+                    timing_note_phase(TimingPhase::menu_image_wait,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - image_wait_start).count());
+                    const auto copy_start = std::chrono::steady_clock::now();
+                    render_scope(OpenXrMenuRenderInfo{
+                        menu_swapchain_.images[image_index].texture,
+                        center_pose,
+                        menu_swapchain_.width,
+                        menu_swapchain_.height,
+                    });
+                    timing_note_phase(TimingPhase::menu_copy,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - copy_start).count());
+                    XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    const auto release_start = std::chrono::steady_clock::now();
+                    check(xrReleaseSwapchainImage(menu_swapchain_.handle, &release_info),
+                        "xrReleaseSwapchainImage(scope)");
+                    timing_note_phase(TimingPhase::menu_release,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - release_start).count());
+                    image_acquired = false;
+
+                    quad.space = reference_space_;
+                    quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                    quad.pose = center_pose;
+                    const XrVector3f forward = rotate_vector(
+                        center_pose.orientation, {0.0f, 0.0f, -scope_distance_m});
+                    quad.pose.position.x += forward.x;
+                    quad.pose.position.y += forward.y;
+                    quad.pose.position.z += forward.z;
+                    quad.size.width = scope_width_m;
+                    quad.size.height = scope_width_m *
+                        static_cast<float>(menu_swapchain_.height) /
+                        static_cast<float>(menu_swapchain_.width);
+                    quad.subImage.swapchain = menu_swapchain_.handle;
+                    quad.subImage.imageRect.extent = {
+                        menu_swapchain_.width, menu_swapchain_.height};
+                    quad.subImage.imageArrayIndex = 0;
+                    submitted_layer =
+                        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+                }
+            }
+
+            XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
+            end_info.displayTime = frame_state.predictedDisplayTime;
+            end_info.environmentBlendMode = environment_blend_mode_;
+            end_info.layerCount = submitted_layer ? 1u : 0u;
+            end_info.layers = submitted_layer ? &submitted_layer : nullptr;
+            const auto end_start = std::chrono::steady_clock::now();
+            check(xrEndFrame(session_, &end_info), "xrEndFrame(scope)");
+            timing_note_phase(TimingPhase::end_frame,
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - end_start).count());
+            frame_begun = false;
+            frame_begun_ = false;
+            if (submitted_layer) {
+                timing_note_xr_submission();
+                if (!first_scope_layer_logged_) {
+                    first_scope_layer_logged_ = true;
+                    xlog::info(
+                        "[AFVR] First native weapon-scope OpenXR quad layer submitted");
+                }
+            }
+            return submitted_layer != nullptr;
+        }
+        catch (const std::exception& error) {
+            if (image_acquired) {
+                XrSwapchainImageReleaseInfo release_info{
+                    XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(menu_swapchain_.handle, &release_info);
+            }
+            if (frame_begun) {
+                XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
+                end_info.displayTime = frame_state.predictedDisplayTime;
+                end_info.environmentBlendMode = environment_blend_mode_;
+                xrEndFrame(session_, &end_info);
+            }
+            frame_begun_ = false;
+            xlog::error("[AFVR] OpenXR scope frame failed: {}", error.what());
+            exit_requested_ = true;
+            return false;
+        }
+    }
+
     void OpenXrContext::destroy_swapchains()
     {
         for (auto& swapchain : eye_swapchains_) {
@@ -1609,7 +1928,10 @@ namespace afvr
         menu_swapchain_.height = 0;
         menu_swapchain_.format = DXGI_FORMAT_UNKNOWN;
         menu_active_ = false;
+        scope_active_ = false;
         menu_pose_valid_ = false;
+        menu_anchor_position_ = {0.0f, 0.0f, 0.0f};
+        menu_horizontal_forward_ = {0.0f, 0.0f, -1.0f};
 
         hud_swapchain_.render_target_views.clear();
         hud_swapchain_.images.clear();
@@ -1664,6 +1986,24 @@ namespace afvr
             }
             reference_space_ = XR_NULL_HANDLE;
         }
+        if (pending_reference_space_ != XR_NULL_HANDLE) {
+            const XrResult result = xrDestroySpace(pending_reference_space_);
+            if (XR_FAILED(result)) {
+                xlog::warn("[AFVR] xrDestroySpace(pending LOCAL) failed ({})",
+                    static_cast<int>(result));
+            }
+            pending_reference_space_ = XR_NULL_HANDLE;
+        }
+        for (XrSpace space : retired_reference_spaces_) {
+            if (space != XR_NULL_HANDLE) {
+                const XrResult result = xrDestroySpace(space);
+                if (XR_FAILED(result)) {
+                    xlog::warn("[AFVR] xrDestroySpace(retired LOCAL) failed ({})",
+                        static_cast<int>(result));
+                }
+            }
+        }
+        retired_reference_spaces_.clear();
 
         if (session_ != XR_NULL_HANDLE) {
             XrResult result = xrDestroySession(session_);
@@ -1691,6 +2031,11 @@ namespace afvr
         }
 
         system_id_ = XR_NULL_SYSTEM_ID;
+        reference_space_pose_in_natural_ = {
+            {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        pending_reference_space_pose_in_natural_ = {
+            {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        pending_reference_space_change_time_ = 0;
         session_state_ = XR_SESSION_STATE_UNKNOWN;
         session_running_ = false;
         exit_requested_ = false;

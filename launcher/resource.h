@@ -102,6 +102,7 @@
 #define IDC_VR_TURN_MODE_COMBO          3092
 #define IDC_VR_SNAP_ANGLE_EDIT          3093
 #define IDC_VR_SMOOTH_SPEED_EDIT        3094
+#define IDC_VR_FAST_WEAPON_SWITCH_CHECK 3095
 
 // Image buttons
 #define IDB_PLAY_NORMAL                 3001

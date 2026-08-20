@@ -645,6 +645,44 @@ FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_
     },
 };
 
+// RF uses this one target-selection function both for the per-frame usable
+// object overlay and for the actual Use keypress. In flat mode it correctly
+// reads the player entity's eye pose, but in VR that pose contains only body /
+// artificial yaw. Temporarily supply the collision-aware HMD world pose so
+// physical head turns and thumbstick turns select the same object.
+FunHook<rf::Object*(rf::Entity*, int*)> player_find_usable_object_hook{
+    0x004897D0,
+    [](rf::Entity* entity, int* interface_point) {
+        if (entity && entity == rf::local_player_entity) {
+            rf::Vector3 head_position{};
+            rf::Matrix3 head_orientation{};
+            if (afvr::get_head_pose(head_position, head_orientation)) {
+                const rf::Vector3 native_eye_position = entity->eye_pos;
+                const rf::Matrix3 native_eye_orientation = entity->eye_orient;
+                entity->eye_pos = head_position;
+                entity->eye_orient = head_orientation;
+
+                rf::Object* usable_object =
+                    player_find_usable_object_hook.call_target(
+                        entity, interface_point);
+
+                entity->eye_pos = native_eye_position;
+                entity->eye_orient = native_eye_orientation;
+
+                static bool vr_hmd_use_query_logged = false;
+                if (!vr_hmd_use_query_logged) {
+                    vr_hmd_use_query_logged = true;
+                    xlog::info(
+                        "[AFVR] World interaction target and overlay now follow the tracked HMD view ray");
+                }
+                return usable_object;
+            }
+        }
+        return player_find_usable_object_hook.call_target(
+            entity, interface_point);
+    },
+};
+
 FunHook<bool(rf::Player*)> player_is_local_hook{
     0x004A68D0,
     [](rf::Player* player) {
@@ -1149,6 +1187,7 @@ void player_do_patch()
 
     // spectate mode support
     player_execute_action_hook.install();
+    player_find_usable_object_hook.install();
     player_create_entity_hook.install();
     player_is_local_hook.install();
 

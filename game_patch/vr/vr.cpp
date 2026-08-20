@@ -81,6 +81,10 @@ namespace afvr
         bool g_mounted_native_aim_valid = false;
         bool g_mounted_aim_logged = false;
         bool g_vehicle_controls_logged = false;
+        bool g_local_attachment_active = false;
+        int g_local_attachment_entity_handle = -1;
+        bool g_vehicle_exit_horizon_stabilization = false;
+        int g_vehicle_exit_level_frames = 0;
         bool g_movement_input_logged = false;
         bool g_ladder_input_logged = false;
         bool g_snap_turn_logged = false;
@@ -93,6 +97,8 @@ namespace afvr
         bool g_two_hand_support_available = false;
         bool g_two_hand_weapon_active = false;
         int g_two_hand_weapon_id = -1;
+        bool g_two_hand_calibration_active = false;
+        int g_two_hand_calibration_weapon_id = -1;
         int g_current_weapon_id = -1;
         bool g_debug_weapon_at_hmd = false;
         int g_weapon_render_eye = -1;
@@ -108,10 +114,16 @@ namespace afvr
         rf::Matrix3 g_right_controller_orientation{};
         bool g_controller_grip_world_valid = false;
         bool g_controller_aim_world_valid = false;
+        bool g_left_controller_grip_world_valid = false;
+        bool g_left_controller_aim_world_valid = false;
         rf::Vector3 g_controller_grip_world_position{};
         rf::Matrix3 g_controller_grip_world_orientation{};
         rf::Vector3 g_controller_aim_world_position{};
         rf::Matrix3 g_controller_aim_world_orientation{};
+        rf::Vector3 g_left_controller_grip_world_position{};
+        rf::Matrix3 g_left_controller_grip_world_orientation{};
+        rf::Vector3 g_left_controller_aim_world_position{};
+        rf::Matrix3 g_left_controller_aim_world_orientation{};
         bool g_head_pose_valid = false;
         rf::Vector3 g_head_position{};
         rf::Matrix3 g_head_orientation{};
@@ -128,6 +140,10 @@ namespace afvr
         bool g_frame_limiter_bypassed = false;
         bool g_multiplayer_best_effort_logged = false;
         bool g_menu_capture_active = false;
+        bool g_scope_capture_active = false;
+        bool g_scope_view_base_valid = false;
+        rf::Vector3 g_scope_base_eye_position{};
+        rf::Matrix3 g_scope_player_view_base{};
         std::chrono::steady_clock::time_point g_steamvr_menu_chord_started{};
         bool g_steamvr_menu_chord_timing = false;
         rf::Vector3 g_roomscale_world_correction{};
@@ -518,6 +534,7 @@ namespace afvr
             rf::Vector3 muzzle_direction;
             rf::Vector3 laser_position;
             rf::Vector3 laser_rotation;
+            rf::Vector3 muzzle_rotation;
         };
 
         // RF weapon IDs are stable table indices for the stock campaign. These
@@ -529,21 +546,21 @@ namespace afvr
         const std::array g_weapon_calibrations{
             VrWeaponCalibration{0x00, {0.260f, 0.200f, -0.300f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // remote charge (laser excluded)
             VrWeaponCalibration{0x02, {-0.190f, -0.100f, -0.500f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // riot stick (laser excluded)
-            VrWeaponCalibration{0x03, {-0.190f, 0.030f, -0.700f}, {}, {0.055f, -0.045f, 0.105f}, {}, {0.055f, -0.015f, 0.310f}, {0.0f, 0.0f, 1.0f}, {0.295f, 0.035f, 1.045f}, {0.0f, -0.02618f, 0.0f}}, // handgun
+            VrWeaponCalibration{0x03, {-0.190f, 0.030f, -0.700f}, {0.0f, -0.013963f, 0.0f}, {0.055f, -0.045f, 0.105f}, {}, {0.055f, -0.015f, 0.310f}, {0.0f, 0.0f, 1.0f}, {0.295f, 0.035f, 1.045f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.017453f, 0.0f}}, // handgun
             VrWeaponCalibration{0x04, {-0.190f, 0.000f, -0.750f}, {}, {0.055f, -0.045f, 0.125f}, {}, {0.055f, -0.015f, 0.390f}, {0.0f, 0.0f, 1.0f}, {0.055f, -0.045f, 0.310f}, {0.0f, -0.02618f, 0.0f}}, // undercover handgun
-            VrWeaponCalibration{0x05, {-0.190f, 0.300f, 0.600f}, {}, {0.105f, -0.085f, 0.275f}, {}, {0.105f, -0.030f, 0.980f}, {0.0f, 0.0f, 1.0f}, {0.205f, -0.265f, 0.560f}, {0.0f, -0.02618f, 0.0f}}, // shotgun
-            VrWeaponCalibration{0x06, {-0.190f, 0.200f, -0.600f}, {}, {0.110f, -0.090f, 0.300f}, {}, {0.110f, -0.025f, 0.900f}, {0.0f, 0.0f, 1.0f}, {0.300f, -0.220f, 2.380f}, {0.0f, -0.02618f, 0.0f}}, // sniper rifle
-            VrWeaponCalibration{0x07, {-0.090f, 0.150f, -0.250f}, {}, {0.140f, -0.105f, 0.325f}, {}, {0.230f, 0.010f, 0.950f}, {0.0f, 0.0f, 1.0f}, {0.230f, -0.250f, 1.300f}, {0.0f, -0.02618f, 0.0f}}, // rocket launcher
-            VrWeaponCalibration{0x08, {-0.140f, 0.250f, -0.650f}, {}, {0.105f, -0.085f, 0.265f}, {}, {0.105f, -0.025f, 0.790f}, {0.0f, 0.0f, 1.0f}, {0.285f, -0.240f, 1.600f}, {0.0f, -0.02618f, 0.0f}}, // assault rifle
-            VrWeaponCalibration{0x09, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}, {0.405f, -0.270f, 1.420f}, {0.0f, -0.02618f, 0.0f}}, // machine pistol
-            VrWeaponCalibration{0x0A, {-0.390f, 0.250f, -0.750f}, {}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}, {0.425f, -0.210f, 1.370f}, {0.0f, -0.02618f, 0.0f}}, // special machine pistol
-            VrWeaponCalibration{0x0B, {-0.390f, 0.000f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // grenade (laser excluded)
+            VrWeaponCalibration{0x05, {-0.110f, 0.300f, 0.670f}, {-0.017453f, 0.0f, 0.0f}, {0.105f, -0.085f, 0.275f}, {}, {0.105f, -0.030f, 0.980f}, {0.0f, 0.0f, 1.0f}, {0.205f, -0.265f, 0.560f}, {0.0f, -0.02618f, 0.0f}, {0.0f, 0.027925f, 0.0f}}, // shotgun
+            VrWeaponCalibration{0x06, {-0.190f, 0.200f, -0.600f}, {-0.010472f, -0.005236f, 0.0f}, {0.110f, -0.090f, 0.300f}, {}, {0.110f, -0.025f, 0.900f}, {0.0f, 0.0f, 1.0f}, {0.300f, -0.220f, 2.380f}, {0.0f, -0.02618f, 0.0f}, {0.0f, 0.034907f, 0.0f}}, // sniper rifle
+            VrWeaponCalibration{0x07, {-0.090f, 0.180f, -0.250f}, {}, {0.140f, -0.105f, 0.325f}, {}, {0.230f, 0.010f, 0.950f}, {0.0f, 0.0f, 1.0f}, {0.230f, -0.250f, 1.300f}, {0.0f, -0.02618f, 0.0f}, {0.0f, 0.008727f, 0.0f}}, // rocket launcher
+            VrWeaponCalibration{0x08, {-0.140f, 0.300f, -0.550f}, {-0.017453f, -0.008727f, 0.0f}, {0.105f, -0.085f, 0.265f}, {}, {0.105f, -0.025f, 0.790f}, {0.0f, 0.0f, 1.0f}, {0.285f, -0.240f, 1.600f}, {0.0f, -0.02618f, 0.0f}, {0.0f, 0.017453f, 0.0f}}, // assault rifle
+            VrWeaponCalibration{0x09, {-0.390f, 0.290f, -0.650f}, {-0.017453f, -0.026180f, 0.0f}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}, {0.405f, -0.270f, 1.420f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.078540f, 0.0f}}, // machine pistol
+            VrWeaponCalibration{0x0A, {-0.390f, 0.250f, -0.750f}, {-0.017453f, -0.026180f, 0.0f}, {0.085f, -0.070f, 0.220f}, {}, {0.085f, -0.020f, 0.620f}, {0.0f, 0.0f, 1.0f}, {0.425f, -0.210f, 1.370f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.069813f, 0.0f}}, // special machine pistol
+            VrWeaponCalibration{0x0B, {-0.390f, 0.000f, -0.300f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // grenade (laser excluded)
             VrWeaponCalibration{0x0C, {-0.090f, -1.210f, -0.400f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.430f}, {0.0f, -0.02618f, 0.0f}}, // flamethrower
             VrWeaponCalibration{0x0D, {-0.140f, -0.050f, -0.350f}, {}, {0.080f, -0.065f, 0.200f}, {}, {0.080f, -0.020f, 0.600f}, {0.0f, 0.0f, 1.0f}, {0.080f, -0.050f, 0.450f}, {0.0f, -0.02618f, 0.0f}}, // riot shield (laser excluded)
-            VrWeaponCalibration{0x0E, {1.160f, 0.200f, 0.100f}, {}, {0.120f, -0.095f, 0.310f}, {}, {0.120f, -0.020f, 0.920f}, {0.0f, 0.0f, 1.0f}, {-1.120f, -0.315f, 0.700f}, {0.0f, -0.02618f, 0.0f}}, // rail gun
-            VrWeaponCalibration{0x0F, {-0.040f, 0.200f, -0.050f}, {}, {0.120f, -0.095f, 0.300f}, {}, {0.120f, -0.025f, 0.860f}, {0.0f, 0.0f, 1.0f}, {0.030f, -0.180f, 1.550f}, {0.0f, -0.02618f, 0.0f}}, // heavy machine gun
-            VrWeaponCalibration{0x10, {-0.190f, 0.200f, -0.350f}, {}, {0.110f, -0.090f, 0.285f}, {}, {0.110f, -0.025f, 0.850f}, {0.0f, 0.0f, 1.0f}, {0.290f, -0.120f, 1.750f}, {0.0f, -0.02618f, 0.0f}}, // scoped assault rifle
-            VrWeaponCalibration{0x11, {0.210f, 0.100f, -0.750f}, {}, {0.145f, -0.110f, 0.335f}, {}, {0.145f, 0.010f, 1.000f}, {0.0f, 0.0f, 1.0f}, {-0.235f, -0.040f, 3.160f}, {0.0f, -0.02618f, 0.0f}}, // shoulder cannon
+            VrWeaponCalibration{0x0E, {1.160f, 0.200f, 0.100f}, {}, {0.120f, -0.095f, 0.310f}, {}, {0.120f, -0.020f, 0.920f}, {0.0f, 0.0f, 1.0f}, {-1.120f, -0.315f, 0.700f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.026180f, 0.0f}}, // rail gun
+            VrWeaponCalibration{0x0F, {-0.040f, 0.200f, -0.050f}, {}, {0.120f, -0.095f, 0.300f}, {}, {0.120f, -0.025f, 0.860f}, {0.0f, 0.0f, 1.0f}, {0.030f, -0.180f, 1.550f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.043633f, 0.0f}}, // heavy machine gun
+            VrWeaponCalibration{0x10, {-0.190f, 0.200f, -0.350f}, {-0.005236f, -0.017453f, 0.0f}, {0.110f, -0.090f, 0.285f}, {}, {0.110f, -0.025f, 0.850f}, {0.0f, 0.0f, 1.0f}, {0.290f, -0.120f, 1.750f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.061087f, 0.0f}}, // scoped assault rifle
+            VrWeaponCalibration{0x11, {0.210f, 0.100f, -0.750f}, {}, {0.145f, -0.110f, 0.335f}, {}, {0.145f, 0.010f, 1.000f}, {0.0f, 0.0f, 1.0f}, {-0.235f, -0.040f, 3.160f}, {0.0f, -0.02618f, 0.0f}, {0.0f, -0.052360f, 0.0f}}, // shoulder cannon
         };
         const VrWeaponCalibration g_fallback_weapon_calibration{
             -1, {-0.190f, 0.000f, -0.750f}, {}, {0.080f, -0.065f, 0.200f}, {},
@@ -560,31 +577,33 @@ namespace afvr
             float support_fraction;
             float capture_radius;
             float maximum_hand_line_weight;
+            rf::Vector3 support_position{};
+            bool use_support_position = false;
         };
 
-        // Support positions are derived along each calibrated weapon's
-        // primary-grip-to-muzzle line. The per-gun fractions put the virtual
-        // foregrip on the receiver/pump/handguard without requiring new model
-        // tags. Pistols deliberately favor the two aim poses over the short,
-        // physically side-by-side controller baseline.
+        // Measured support positions are weapon-local controller captures from
+        // the alpha 0.7 calibration pass. Uncaptured guns retain the derived
+        // primary-grip-to-muzzle fallback.
         const std::array g_two_hand_calibrations{
             VrTwoHandCalibration{0x03, 0.12f, 0.20f, 0.30f}, // handgun
             VrTwoHandCalibration{0x04, 0.12f, 0.20f, 0.30f}, // undercover handgun
-            VrTwoHandCalibration{0x05, 0.55f, 0.28f, 1.00f}, // shotgun
-            VrTwoHandCalibration{0x06, 0.52f, 0.28f, 1.00f}, // sniper rifle
-            VrTwoHandCalibration{0x07, 0.45f, 0.30f, 0.95f}, // rocket launcher
-            VrTwoHandCalibration{0x08, 0.52f, 0.27f, 1.00f}, // assault rifle
-            VrTwoHandCalibration{0x09, 0.38f, 0.24f, 0.75f}, // machine pistol
-            VrTwoHandCalibration{0x0A, 0.38f, 0.24f, 0.75f}, // special machine pistol
+            VrTwoHandCalibration{0x05, 0.55f, 0.28f, 1.00f, {0.2572f, -0.3771f, 0.0084f}, true}, // shotgun
+            VrTwoHandCalibration{0x06, 0.52f, 0.28f, 1.00f, {0.2810f, -0.2803f, 1.2149f}, true}, // sniper rifle
+            VrTwoHandCalibration{0x07, 0.45f, 0.30f, 0.95f, {0.2572f, -0.2974f, 0.8442f}, true}, // rocket launcher
+            VrTwoHandCalibration{0x08, 0.52f, 0.27f, 1.00f, {0.2825f, -0.3366f, 1.1209f}, true}, // assault rifle
+            VrTwoHandCalibration{0x09, 0.38f, 0.24f, 0.75f, {0.4461f, -0.3409f, 1.1667f}, true}, // machine pistol
+            VrTwoHandCalibration{0x0A, 0.38f, 0.24f, 0.75f, {0.4576f, -0.3529f, 1.2405f}, true}, // special machine pistol
             VrTwoHandCalibration{0x0C, 0.48f, 0.30f, 0.90f}, // flamethrower
-            VrTwoHandCalibration{0x0E, 0.52f, 0.29f, 1.00f}, // rail gun
-            VrTwoHandCalibration{0x0F, 0.50f, 0.30f, 1.00f}, // heavy machine gun
-            VrTwoHandCalibration{0x10, 0.52f, 0.28f, 1.00f}, // scoped assault rifle
+            VrTwoHandCalibration{0x0E, 0.52f, 0.29f, 1.00f, {-1.0995f, -0.3596f, 0.5678f}, true}, // rail gun
+            VrTwoHandCalibration{0x0F, 0.50f, 0.30f, 1.00f, {0.0864f, -0.2529f, 0.7003f}, true}, // heavy machine gun
+            VrTwoHandCalibration{0x10, 0.52f, 0.28f, 1.00f, {0.3310f, -0.2111f, 0.9334f}, true}, // scoped assault rifle
             VrTwoHandCalibration{0x11, 0.45f, 0.31f, 0.95f}, // shoulder cannon
         };
         const VrTwoHandCalibration g_fallback_two_hand_calibration{
             -1, 0.50f, 0.28f, 1.00f,
         };
+        std::array<VrTwoHandCalibration, 64> g_live_two_hand_calibrations{};
+        std::array<bool, 64> g_live_two_hand_calibration_active{};
 
         const VrWeaponCalibration& base_weapon_calibration(int weapon_id)
         {
@@ -615,7 +634,24 @@ namespace afvr
             return entity ? entity->ai.current_primary_weapon : -1;
         }
 
-        const VrTwoHandCalibration* two_hand_calibration(int weapon_id)
+        bool native_weapon_scope_is_active()
+        {
+            if (!rf::local_player) {
+                return false;
+            }
+            const int weapon_id = current_local_weapon_id();
+            if (weapon_id != rf::sniper_rifle_weapon_type &&
+                weapon_id != rf::scope_assault_rifle_weapon_type) {
+                return false;
+            }
+
+            const auto& fpgun = rf::local_player->fpgun_data;
+            return rf::player_fpgun_is_zoomed(rf::local_player) ||
+                fpgun.zooming_in ||
+                (fpgun.zoom_factor > 1.001f && !fpgun.zooming_out);
+        }
+
+        const VrTwoHandCalibration* base_two_hand_calibration(int weapon_id)
         {
             auto found = std::ranges::find_if(g_two_hand_calibrations,
                 [weapon_id](const VrTwoHandCalibration& calibration) {
@@ -642,6 +678,34 @@ namespace afvr
                 ? &g_fallback_two_hand_calibration : nullptr;
         }
 
+        const VrTwoHandCalibration* two_hand_calibration(int weapon_id)
+        {
+            if (weapon_id >= 0 &&
+                weapon_id < static_cast<int>(g_live_two_hand_calibrations.size()) &&
+                g_live_two_hand_calibration_active[weapon_id]) {
+                return &g_live_two_hand_calibrations[weapon_id];
+            }
+            return base_two_hand_calibration(weapon_id);
+        }
+
+        VrTwoHandCalibration* editable_two_hand_calibration(int weapon_id)
+        {
+            if (weapon_id < 0 ||
+                weapon_id >= static_cast<int>(g_live_two_hand_calibrations.size())) {
+                return nullptr;
+            }
+            const VrTwoHandCalibration* base = base_two_hand_calibration(weapon_id);
+            if (!base) {
+                return nullptr;
+            }
+            if (!g_live_two_hand_calibration_active[weapon_id]) {
+                g_live_two_hand_calibrations[weapon_id] = *base;
+                g_live_two_hand_calibrations[weapon_id].weapon_id = weapon_id;
+                g_live_two_hand_calibration_active[weapon_id] = true;
+            }
+            return &g_live_two_hand_calibrations[weapon_id];
+        }
+
         VrWeaponCalibration* editable_weapon_calibration()
         {
             const int weapon_id = current_local_weapon_id();
@@ -662,6 +726,16 @@ namespace afvr
         rf::Vector3 transform_direction(const rf::Matrix3& basis, const rf::Vector3& value)
         {
             return basis.rvec * value.x + basis.uvec * value.y + basis.fvec * value.z;
+        }
+
+        rf::Vector3 direction_in_basis(const rf::Matrix3& basis,
+            const rf::Vector3& direction)
+        {
+            return {
+                basis.rvec.dot_prod(direction),
+                basis.uvec.dot_prod(direction),
+                basis.fvec.dot_prod(direction),
+            };
         }
 
         rf::Matrix3 compose_orientation(const rf::Matrix3& base, const rf::Matrix3& relative)
@@ -731,6 +805,94 @@ namespace afvr
             g_mounted_native_aim_valid = false;
         }
 
+        rf::Matrix3 level_yaw_orientation(const rf::Matrix3& orientation)
+        {
+            rf::Vector3 forward{
+                orientation.fvec.x, 0.0f, orientation.fvec.z};
+            float forward_length = forward.len();
+            if (forward_length <= 0.001f) {
+                // At almost +/-90 degrees of vehicle pitch the forward vector
+                // no longer carries a reliable horizontal heading. RF's right
+                // vector still does, so reconstruct forward from it instead.
+                rf::Vector3 right{
+                    orientation.rvec.x, 0.0f, orientation.rvec.z};
+                const float right_length = right.len();
+                if (right_length <= 0.001f) {
+                    return {
+                        {1.0f, 0.0f, 0.0f},
+                        {0.0f, 1.0f, 0.0f},
+                        {0.0f, 0.0f, 1.0f},
+                    };
+                }
+                right /= right_length;
+                forward = {-right.z, 0.0f, right.x};
+                forward_length = 1.0f;
+            }
+            forward /= forward_length;
+            const rf::Vector3 right{forward.z, 0.0f, -forward.x};
+            return {
+                right,
+                {0.0f, 1.0f, 0.0f},
+                forward,
+            };
+        }
+
+        void update_local_attachment_transition()
+        {
+            auto* entity = rf::local_player
+                ? rf::entity_from_handle(rf::local_player->entity_handle)
+                : nullptr;
+            if (!entity) {
+                g_local_attachment_active = false;
+                g_local_attachment_entity_handle = -1;
+                g_vehicle_exit_horizon_stabilization = false;
+                g_vehicle_exit_level_frames = 0;
+                return;
+            }
+
+            const bool attached = rf::entity_in_vehicle(entity) ||
+                rf::entity_is_on_turret(entity) ||
+                rf::entity_is_jeep_gunner(entity);
+            const bool same_player_entity =
+                entity->handle == g_local_attachment_entity_handle;
+            if (g_local_attachment_active && !attached && same_player_entity &&
+                !rf::entity_is_dying(entity)) {
+                // Pitchable vehicles (notably the submarine) can leave their
+                // camera/control pitch and bank on the player entity for the
+                // first on-foot frame. VR supplies head pitch/roll separately,
+                // so retain body/eye yaw and discard only those stale axes.
+                auto& control = entity->control_data;
+                control.phb.x = 0.0f;
+                control.phb.z = 0.0f;
+                control.delta_phb.x = 0.0f;
+                control.delta_phb.z = 0.0f;
+                control.eye_phb.x = 0.0f;
+                control.eye_phb.z = 0.0f;
+                control.delta_eye_phb.x = 0.0f;
+                control.delta_eye_phb.z = 0.0f;
+                control.automobile_eye_phb = {};
+
+                clear_mounted_aim_state();
+                g_vehicle_exit_horizon_stabilization = true;
+                g_vehicle_exit_level_frames = 0;
+                g_roomscale_world_correction = {};
+                g_roomscale_collision_frame = -1;
+                g_latest_player_view_base_valid = false;
+                g_head_pose_valid = false;
+                g_weapon_pose_valid = false;
+                g_weapon_aim_pose_valid = false;
+                xlog::info(
+                    "[AFVR] Mounted exit detected; cleared residual vehicle pitch/roll and stabilized the on-foot horizon");
+            }
+            else if (attached) {
+                g_vehicle_exit_horizon_stabilization = false;
+                g_vehicle_exit_level_frames = 0;
+            }
+
+            g_local_attachment_active = attached;
+            g_local_attachment_entity_handle = entity->handle;
+        }
+
         rf::Matrix3 mounted_vr_view_base(const rf::Matrix3& native_view)
         {
             rf::Entity* entity = nullptr;
@@ -738,6 +900,29 @@ namespace afvr
             bool follows_host = false;
             if (!get_local_mounted_aim_context(entity, host, follows_host)) {
                 clear_mounted_aim_state();
+                auto* local_entity = rf::local_player
+                    ? rf::entity_from_handle(rf::local_player->entity_handle)
+                    : nullptr;
+                if (g_vehicle_exit_horizon_stabilization && local_entity &&
+                    !rf::entity_in_vehicle(local_entity) &&
+                    !rf::entity_is_on_turret(local_entity)) {
+                    constexpr float level_epsilon = 0.002f;
+                    const bool native_view_is_level =
+                        std::abs(native_view.fvec.y) <= level_epsilon &&
+                        std::abs(native_view.rvec.y) <= level_epsilon &&
+                        native_view.uvec.y >= 1.0f - level_epsilon;
+                    g_vehicle_exit_level_frames = native_view_is_level
+                        ? g_vehicle_exit_level_frames + 1 : 0;
+                    const rf::Matrix3 leveled_view =
+                        level_yaw_orientation(native_view);
+                    if (g_vehicle_exit_level_frames >= 2) {
+                        g_vehicle_exit_horizon_stabilization = false;
+                        g_vehicle_exit_level_frames = 0;
+                        xlog::info(
+                            "[AFVR] Native on-foot camera is level after mounted exit");
+                    }
+                    return leveled_view;
+                }
                 return native_view;
             }
 
@@ -1065,6 +1250,8 @@ namespace afvr
             constexpr size_t left_hand = 0;
             constexpr size_t right_hand = 1;
             g_laser_emitter_pose_valid = false;
+            g_left_controller_grip_world_valid = false;
+            g_left_controller_aim_world_valid = false;
             rf::Vector3 controller_grip_position{};
             rf::Matrix3 controller_grip_orientation{};
             g_weapon_pose_valid = input.grip_pose_valid[right_hand] &&
@@ -1109,6 +1296,16 @@ namespace afvr
                 transform_tracked_pose_to_world(input.aim_poses[left_hand],
                     base_position, base_orientation,
                     support_aim_position, support_aim_orientation);
+            g_left_controller_grip_world_valid = support_grip_pose_valid;
+            g_left_controller_aim_world_valid = support_aim_pose_valid;
+            if (support_grip_pose_valid) {
+                g_left_controller_grip_world_position = support_grip_position;
+                g_left_controller_grip_world_orientation = support_grip_orientation;
+            }
+            if (support_aim_pose_valid) {
+                g_left_controller_aim_world_position = support_aim_position;
+                g_left_controller_aim_world_orientation = support_aim_orientation;
+            }
 
             // Effects such as ejected casings use the physical primary-grip
             // position and the final solved weapon orientation.
@@ -1141,15 +1338,18 @@ namespace afvr
             // Once grabbed, retain the support grip until squeeze release even
             // if recoil or a large hand motion moves outside the capture sphere.
             g_two_hand_support_available = false;
-            if (!two_hand || !support_grip_pose_valid || g_menu_capture_active) {
+            if (!two_hand || !support_grip_pose_valid || g_menu_capture_active ||
+                g_two_hand_calibration_active) {
                 g_two_hand_weapon_active = false;
                 g_two_hand_weapon_id = -1;
             }
             else {
                 const rf::Vector3 model_support_position =
-                    calibration.pivot_position +
-                    (calibration.muzzle_position - calibration.pivot_position) *
-                        two_hand->support_fraction;
+                    two_hand->use_support_position
+                    ? two_hand->support_position
+                    : calibration.pivot_position +
+                        (calibration.muzzle_position - calibration.pivot_position) *
+                            two_hand->support_fraction;
                 const rf::Vector3 support_target = g_weapon_render_position +
                     transform_direction(g_weapon_render_orientation,
                         model_support_position);
@@ -1206,8 +1406,11 @@ namespace afvr
             g_weapon_aim_position = g_weapon_render_position + transform_direction(
                 g_weapon_render_orientation, calibration.muzzle_position);
             constexpr float degrees_to_radians = 0.0174532925199f;
-            g_weapon_aim_orientation = compose_orientation(
+            const rf::Matrix3 muzzle_orientation = compose_orientation(
                 solved_aim_orientation,
+                euler_rotation_matrix(calibration.muzzle_rotation));
+            g_weapon_aim_orientation = compose_orientation(
+                muzzle_orientation,
                 euler_rotation_matrix({
                     0.0f,
                     g_weapon_aim_yaw_correction_degrees * degrees_to_radians,
@@ -1220,8 +1423,11 @@ namespace afvr
             g_laser_emitter_position = g_weapon_render_position +
                 transform_direction(g_weapon_render_orientation,
                     calibration.laser_position);
-            g_laser_emitter_orientation = compose_orientation(
+            const rf::Matrix3 laser_muzzle_orientation = compose_orientation(
                 g_weapon_render_orientation,
+                euler_rotation_matrix(calibration.muzzle_rotation));
+            g_laser_emitter_orientation = compose_orientation(
+                laser_muzzle_orientation,
                 euler_rotation_matrix(calibration.laser_rotation));
             g_laser_emitter_pose_valid = true;
 
@@ -1838,7 +2044,8 @@ namespace afvr
                 bool stereo_world_rendered = false;
 #ifdef AF_ENABLE_OPENXR
                 if (g_openxr && g_openxr->is_session_running() &&
-                    !g_rendering_weapon && !g_menu_capture_active) {
+                    !g_rendering_weapon && !g_menu_capture_active &&
+                    !g_scope_capture_active) {
                     const rf::Vector3 base_eye_pos = rf::gr::eye_pos;
                     const rf::Matrix3 base_eye_matrix = rf::gr::eye_matrix;
                     const float base_horizontal_fov = addr_as_ref<float>(0x0059613C);
@@ -2005,6 +2212,28 @@ namespace afvr
 #endif
 
                 if (!stereo_world_rendered) {
+#ifdef AF_ENABLE_OPENXR
+                    if (g_openxr && g_openxr->is_session_running() &&
+                        g_scope_capture_active && !g_rendering_weapon) {
+                        const rf::Vector3 native_eye_position = rf::gr::eye_pos;
+                        const rf::Matrix3 native_eye_matrix = rf::gr::eye_matrix;
+                        g_scope_base_eye_position = native_eye_position;
+                        g_scope_player_view_base =
+                            mounted_vr_view_base(native_eye_matrix);
+                        g_scope_view_base_valid = true;
+
+                        // RF has already selected the zoomed horizontal FOV for
+                        // this native pass. Keep that exact FOV/scope overlay,
+                        // but use the last predicted HMD pose so opening the
+                        // quad does not snap back to the body-facing camera.
+                        if (g_head_pose_valid) {
+                            rf::Matrix3 scope_eye_matrix = g_head_orientation;
+                            rf::Vector3 scope_eye_position = g_head_position;
+                            rf::gr::setup_3d(scope_eye_matrix, scope_eye_position,
+                                addr_as_ref<float>(0x0059613C), true, true);
+                        }
+                    }
+#endif
                     g_portal_render_hook.call_target(viewer, room, visibility, optional_clip);
                 }
             },
@@ -2282,6 +2511,8 @@ namespace afvr
                 calibration.pivot_rotation * radians_to_degrees;
             const rf::Vector3 laser_rotation_degrees =
                 calibration.laser_rotation * radians_to_degrees;
+            const rf::Vector3 muzzle_rotation_degrees =
+                calibration.muzzle_rotation * radians_to_degrees;
             rf::console::print("VR weapon {} live calibration:", weapon_id);
             rf::console::print("  move   {:.3f} {:.3f} {:.3f}",
                 calibration.grip_position.x, calibration.grip_position.y,
@@ -2294,6 +2525,9 @@ namespace afvr
             rf::console::print("  muzzle {:.3f} {:.3f} {:.3f}",
                 calibration.muzzle_position.x, calibration.muzzle_position.y,
                 calibration.muzzle_position.z);
+            rf::console::print("  muzzle rotation {:.1f} {:.1f} {:.1f} degrees",
+                muzzle_rotation_degrees.x, muzzle_rotation_degrees.y,
+                muzzle_rotation_degrees.z);
             rf::console::print("  laser  {:.3f} {:.3f} {:.3f}",
                 calibration.laser_position.x, calibration.laser_position.y,
                 calibration.laser_position.z);
@@ -2301,7 +2535,7 @@ namespace afvr
                 laser_rotation_degrees.x, laser_rotation_degrees.y,
                 laser_rotation_degrees.z);
             xlog::info(
-                "[AFVR] CALIBRATION weapon={} move=({:.3f},{:.3f},{:.3f}) pivot=({:.3f},{:.3f},{:.3f}) rotation_deg=({:.1f},{:.1f},{:.1f}) muzzle=({:.3f},{:.3f},{:.3f}) laser=({:.3f},{:.3f},{:.3f}) laser_rotation_deg=({:.1f},{:.1f},{:.1f})",
+                "[AFVR] CALIBRATION weapon={} move=({:.3f},{:.3f},{:.3f}) pivot=({:.3f},{:.3f},{:.3f}) rotation_deg=({:.1f},{:.1f},{:.1f}) muzzle=({:.3f},{:.3f},{:.3f}) muzzle_rotation_deg=({:.1f},{:.1f},{:.1f}) laser=({:.3f},{:.3f},{:.3f}) laser_rotation_deg=({:.1f},{:.1f},{:.1f})",
                 weapon_id,
                 calibration.grip_position.x, calibration.grip_position.y,
                 calibration.grip_position.z,
@@ -2310,6 +2544,8 @@ namespace afvr
                 rotation_degrees.x, rotation_degrees.y, rotation_degrees.z,
                 calibration.muzzle_position.x, calibration.muzzle_position.y,
                 calibration.muzzle_position.z,
+                muzzle_rotation_degrees.x, muzzle_rotation_degrees.y,
+                muzzle_rotation_degrees.z,
                 calibration.laser_position.x, calibration.laser_position.y,
                 calibration.laser_position.z,
                 laser_rotation_degrees.x, laser_rotation_degrees.y,
@@ -2329,6 +2565,134 @@ namespace afvr
             }
             *component += delta;
             report_weapon_calibration(calibration->weapon_id, *calibration);
+        }
+
+        void report_two_hand_calibration(int weapon_id,
+            const VrTwoHandCalibration& calibration)
+        {
+            xlog::info(
+                "[AFVR] TWO_HAND_CALIBRATION weapon={} support_position=({:.4f},{:.4f},{:.4f}) capture_radius={:.3f} support_fraction={:.3f} maximum_hand_line_weight={:.3f}",
+                weapon_id,
+                calibration.support_position.x,
+                calibration.support_position.y,
+                calibration.support_position.z,
+                calibration.capture_radius,
+                calibration.support_fraction,
+                calibration.maximum_hand_line_weight);
+        }
+
+        bool capture_two_hand_calibration_sample()
+        {
+            if (!g_two_hand_calibration_active || !g_openxr) {
+                return false;
+            }
+            const int weapon_id = current_local_weapon_id();
+            if (weapon_id != g_two_hand_calibration_weapon_id) {
+                rf::console::print(
+                    "Two-hand calibration cancelled because the equipped weapon changed");
+                g_two_hand_calibration_active = false;
+                g_two_hand_calibration_weapon_id = -1;
+                return false;
+            }
+
+            const auto& input = g_openxr->input_state();
+            constexpr size_t left_hand = 0;
+            constexpr size_t right_hand = 1;
+            const bool poses_valid =
+                input.grip_pose_valid[left_hand] &&
+                input.grip_pose_valid[right_hand] &&
+                input.aim_pose_valid[left_hand] &&
+                input.aim_pose_valid[right_hand] &&
+                g_left_controller_grip_world_valid &&
+                g_left_controller_aim_world_valid &&
+                g_controller_grip_world_valid &&
+                g_controller_aim_world_valid &&
+                g_weapon_pose_valid && g_weapon_aim_pose_valid;
+            if (!poses_valid) {
+                rf::console::print(
+                    "Two-hand calibration needs valid tracking for both controllers; keep holding the pose and press right trigger again");
+                xlog::warn(
+                    "[AFVR] TWO_HAND_CALIBRATION weapon={} confirmation rejected: controller pose unavailable",
+                    weapon_id);
+                return false;
+            }
+
+            auto* calibration = editable_two_hand_calibration(weapon_id);
+            if (!calibration) {
+                rf::console::print(
+                    "Weapon {} does not support two-hand calibration", weapon_id);
+                g_two_hand_calibration_active = false;
+                g_two_hand_calibration_weapon_id = -1;
+                return false;
+            }
+
+            const rf::Vector3 support_position = direction_in_basis(
+                g_weapon_render_orientation,
+                g_left_controller_grip_world_position - g_weapon_render_position);
+            const rf::Vector3 left_from_right_aim = direction_in_basis(
+                g_controller_aim_world_orientation,
+                g_left_controller_grip_world_position -
+                    g_controller_grip_world_position);
+            const auto& weapon = weapon_calibration(weapon_id);
+            const rf::Vector3 authored_support_axis =
+                weapon.muzzle_position - weapon.pivot_position;
+            const float authored_axis_length_squared =
+                authored_support_axis.dot_prod(authored_support_axis);
+            float projected_fraction = calibration->support_fraction;
+            float perpendicular_distance = 0.0f;
+            if (authored_axis_length_squared > 0.000001f) {
+                const rf::Vector3 from_pivot =
+                    support_position - weapon.pivot_position;
+                projected_fraction = from_pivot.dot_prod(authored_support_axis) /
+                    authored_axis_length_squared;
+                const rf::Vector3 projected = weapon.pivot_position +
+                    authored_support_axis * projected_fraction;
+                perpendicular_distance = (support_position - projected).len();
+            }
+
+            calibration->support_position = support_position;
+            calibration->use_support_position = true;
+            report_two_hand_calibration(weapon_id, *calibration);
+
+            const XrPosef& left_grip = input.grip_poses[left_hand];
+            const XrPosef& right_grip = input.grip_poses[right_hand];
+            const XrPosef& left_aim = input.aim_poses[left_hand];
+            const XrPosef& right_aim = input.aim_poses[right_hand];
+            xlog::info(
+                "[AFVR] TWO_HAND_SAMPLE weapon={} left_grip_tracking=({:.4f},{:.4f},{:.4f}) right_grip_tracking=({:.4f},{:.4f},{:.4f}) left_aim_tracking=({:.4f},{:.4f},{:.4f}) right_aim_tracking=({:.4f},{:.4f},{:.4f})",
+                weapon_id,
+                left_grip.position.x, left_grip.position.y, left_grip.position.z,
+                right_grip.position.x, right_grip.position.y, right_grip.position.z,
+                left_aim.position.x, left_aim.position.y, left_aim.position.z,
+                right_aim.position.x, right_aim.position.y, right_aim.position.z);
+            xlog::info(
+                "[AFVR] TWO_HAND_SAMPLE weapon={} left_grip_orientation=({:.5f},{:.5f},{:.5f},{:.5f}) right_grip_orientation=({:.5f},{:.5f},{:.5f},{:.5f}) left_aim_orientation=({:.5f},{:.5f},{:.5f},{:.5f}) right_aim_orientation=({:.5f},{:.5f},{:.5f},{:.5f})",
+                weapon_id,
+                left_grip.orientation.x, left_grip.orientation.y,
+                left_grip.orientation.z, left_grip.orientation.w,
+                right_grip.orientation.x, right_grip.orientation.y,
+                right_grip.orientation.z, right_grip.orientation.w,
+                left_aim.orientation.x, left_aim.orientation.y,
+                left_aim.orientation.z, left_aim.orientation.w,
+                right_aim.orientation.x, right_aim.orientation.y,
+                right_aim.orientation.z, right_aim.orientation.w);
+            xlog::info(
+                "[AFVR] TWO_HAND_SAMPLE weapon={} left_from_right_aim=({:.4f},{:.4f},{:.4f}) controller_separation={:.4f} projected_support_fraction={:.4f} perpendicular_offset={:.4f}",
+                weapon_id,
+                left_from_right_aim.x, left_from_right_aim.y,
+                left_from_right_aim.z,
+                (g_left_controller_grip_world_position -
+                    g_controller_grip_world_position).len(),
+                projected_fraction, perpendicular_distance);
+
+            rf::console::print(
+                "Captured two-hand calibration for weapon {}. The support point is active for this session and stored in AlpineFaction.log",
+                weapon_id);
+            g_two_hand_calibration_active = false;
+            g_two_hand_calibration_weapon_id = -1;
+            g_two_hand_weapon_active = false;
+            g_two_hand_weapon_id = -1;
+            return true;
         }
 #endif
 
@@ -2404,6 +2768,17 @@ namespace afvr
             "vr_muzzle_move <x|y|z> <delta>; x=right, y=up, z=forward",
         };
 
+        ConsoleCommand2 g_vr_muzzle_rotate_cmd{
+            "vr_muzzle_rotate",
+            [](std::string axis, float degrees) {
+                constexpr float degrees_to_radians = 0.0174532925199f;
+                nudge_weapon_vector(&VrWeaponCalibration::muzzle_rotation,
+                    std::move(axis), degrees * degrees_to_radians);
+            },
+            "Rotate the equipped weapon's firing direction in aim-local space",
+            "vr_muzzle_rotate <pitch|yaw|roll> <degrees>",
+        };
+
         ConsoleCommand2 g_vr_laser_move_cmd{
             "vr_laser_move",
             [](std::string axis, float delta) {
@@ -2441,6 +2816,29 @@ namespace afvr
             "vr_aim_yaw <degrees>; negative moves shots left, positive moves shots right",
         };
 
+        ConsoleCommand2 g_vr_two_hand_calibrate_cmd{
+            "vr_two_hand_calibrate",
+            []() {
+                const int weapon_id = current_local_weapon_id();
+                if (!base_two_hand_calibration(weapon_id)) {
+                    rf::console::print(
+                        "The equipped weapon does not support two-hand calibration");
+                    return;
+                }
+                g_two_hand_calibration_active = true;
+                g_two_hand_calibration_weapon_id = weapon_id;
+                g_two_hand_weapon_active = false;
+                g_two_hand_weapon_id = -1;
+                rf::console::print(
+                    "Two-hand calibration armed for weapon {}: hold both controllers in your natural firing pose, then press the right trigger to capture",
+                    weapon_id);
+                xlog::info(
+                    "[AFVR] Two-hand calibration armed for weapon {}; awaiting right-trigger confirmation",
+                    weapon_id);
+            },
+            "Capture both controller poses for the equipped gun's two-hand support point",
+        };
+
         ConsoleCommand2 g_vr_weapon_calibration_cmd{
             "vr_weapon_calibration",
             []() {
@@ -2459,6 +2857,7 @@ namespace afvr
             "vr_weapon_calibration_all",
             []() {
                 int reported = 0;
+                int two_hand_reported = 0;
                 xlog::info("[AFVR] CALIBRATION SNAPSHOT BEGIN");
                 for (int weapon_id = 0;
                     weapon_id < static_cast<int>(g_live_weapon_calibrations.size());
@@ -2470,10 +2869,26 @@ namespace afvr
                         g_live_weapon_calibrations[weapon_id]);
                     ++reported;
                 }
-                xlog::info("[AFVR] CALIBRATION SNAPSHOT END ({} weapons)", reported);
+                xlog::info("[AFVR] TWO_HAND_CALIBRATION SNAPSHOT BEGIN");
+                for (int weapon_id = 0;
+                    weapon_id < static_cast<int>(g_live_two_hand_calibrations.size());
+                    ++weapon_id) {
+                    if (!g_live_two_hand_calibration_active[weapon_id]) {
+                        continue;
+                    }
+                    report_two_hand_calibration(weapon_id,
+                        g_live_two_hand_calibrations[weapon_id]);
+                    ++two_hand_reported;
+                }
+                xlog::info(
+                    "[AFVR] TWO_HAND_CALIBRATION SNAPSHOT END ({} weapons)",
+                    two_hand_reported);
+                xlog::info(
+                    "[AFVR] CALIBRATION SNAPSHOT END ({} weapon transforms, {} two-hand supports)",
+                    reported, two_hand_reported);
                 rf::console::print(
-                    "Stored {} live weapon calibrations in AlpineFaction.log",
-                    reported);
+                    "Stored {} weapon and {} two-hand live calibrations in AlpineFaction.log",
+                    reported, two_hand_reported);
             },
             "Store every changed weapon's final VR calibration in AlpineFaction.log",
         };
@@ -2536,9 +2951,11 @@ namespace afvr
         g_vr_weapon_pivot_cmd.register_cmd();
         g_vr_weapon_rotate_cmd.register_cmd();
         g_vr_muzzle_move_cmd.register_cmd();
+        g_vr_muzzle_rotate_cmd.register_cmd();
         g_vr_laser_move_cmd.register_cmd();
         g_vr_laser_rotate_cmd.register_cmd();
         g_vr_aim_yaw_cmd.register_cmd();
+        g_vr_two_hand_calibrate_cmd.register_cmd();
         g_vr_weapon_calibration_cmd.register_cmd();
         g_vr_weapon_calibration_all_cmd.register_cmd();
         g_vr_weapon_reset_cmd.register_cmd();
@@ -2714,6 +3131,7 @@ namespace afvr
             g_openxr && g_openxr->is_session_running());
         if (g_openxr) {
             if (g_openxr->is_session_running()) {
+                update_local_attachment_transition();
                 (void)g_openxr->wait_frame();
             }
             const auto input_sync_start = std::chrono::steady_clock::now();
@@ -2756,9 +3174,19 @@ namespace afvr
                 g_two_hand_weapon_active = false;
                 g_two_hand_weapon_id = -1;
             }
+            const bool scope_was_active = g_scope_capture_active;
+            g_scope_capture_active = g_openxr->is_session_running() &&
+                game_state == rf::GS_GAMEPLAY &&
+                !g_menu_capture_active && native_weapon_scope_is_active();
+            if (g_scope_capture_active != scope_was_active) {
+                g_scope_view_base_valid = false;
+                xlog::info("[AFVR] Native rifle zoom switched to {} rendering",
+                    g_scope_capture_active ? "native OpenXR quad" : "stereo VR");
+            }
+            g_openxr->set_scope_active(g_scope_capture_active);
             g_hud_capture_active = g_openxr->is_session_running() &&
                 game_state == rf::GS_GAMEPLAY &&
-                !g_menu_capture_active;
+                !g_menu_capture_active && !g_scope_capture_active;
             g_openxr->set_hud_active(g_hud_capture_active);
             if (g_menu_capture_active && game_state != g_last_menu_state) {
                 g_openxr->set_menu_active(false);
@@ -2874,6 +3302,21 @@ namespace afvr
 
             const bool right_grip_pressed =
                 g_openxr->is_session_running() && input.grip[1] >= 0.55f;
+            if (g_two_hand_calibration_active &&
+                current_local_weapon_id() != g_two_hand_calibration_weapon_id) {
+                rf::console::print(
+                    "Two-hand calibration cancelled because the equipped weapon changed");
+                xlog::info(
+                    "[AFVR] Two-hand calibration cancelled after weapon change");
+                g_two_hand_calibration_active = false;
+                g_two_hand_calibration_weapon_id = -1;
+            }
+            if (g_two_hand_calibration_active && g_trigger_just_pressed) {
+                // Calibration confirmation owns this entire trigger press. Keep
+                // it out of both primary and alternate fire until release.
+                (void)capture_two_hand_calibration_sample();
+                g_fire_blocked_until_trigger_release = true;
+            }
             if (g_menu_capture_active) {
                 g_gameplay_input_blocked_until_release = true;
             }
@@ -2902,11 +3345,13 @@ namespace afvr
             }
             g_primary_fire_pressed = trigger_pressed && !g_fire_mode_secondary &&
                 !index_alt_trigger_pressed &&
-                !g_menu_capture_active && !g_fire_blocked_until_trigger_release;
+                !g_menu_capture_active && !g_two_hand_calibration_active &&
+                !g_fire_blocked_until_trigger_release;
             g_secondary_fire_pressed =
                 ((trigger_pressed && g_fire_mode_secondary) ||
                     index_alt_trigger_pressed) &&
-                !g_menu_capture_active && !g_fire_blocked_until_trigger_release;
+                !g_menu_capture_active && !g_two_hand_calibration_active &&
+                !g_fire_blocked_until_trigger_release;
             g_primary_fire_just_pressed = g_primary_fire_pressed &&
                 !g_previous_primary_fire;
             g_secondary_fire_just_pressed = g_secondary_fire_pressed &&
@@ -2988,6 +3433,55 @@ namespace afvr
 #endif
     }
 
+    void submit_scope_frame()
+    {
+#ifdef AF_ENABLE_OPENXR
+        if (!g_openxr || !g_openxr->is_session_running() ||
+            !g_scope_capture_active) {
+            return;
+        }
+        static bool copy_failure_logged = false;
+        (void)g_openxr->render_scope_frame([&](const OpenXrMenuRenderInfo& scope) {
+            g_latest_center_tracking_position = scope.center_pose.position;
+            g_latest_center_tracking_position_valid = true;
+            if (!g_tracking_origin.valid || g_recenter_requested) {
+                capture_tracking_origin(scope.center_pose);
+                g_roomscale_world_correction = {};
+                g_roomscale_collision_frame = -1;
+            }
+            if (g_scope_view_base_valid) {
+                const rf::Matrix3 relative_orientation =
+                    relative_tracking_orientation(scope.center_pose.orientation);
+                g_hmd_relative_orientation = relative_orientation;
+                g_hmd_relative_orientation_valid = true;
+                g_hmd_relative_yaw = std::atan2(
+                    relative_orientation.fvec.x, relative_orientation.fvec.z);
+                g_hmd_relative_forward_y =
+                    std::clamp(relative_orientation.fvec.y, -1.0f, 1.0f);
+                g_latest_player_view_base = g_scope_player_view_base;
+                g_latest_player_view_base_valid = true;
+                const rf::Vector3 relative_center_position =
+                    relative_tracking_position(scope.center_pose.position);
+                g_roomscale_world_correction = roomscale_collision_correction(
+                    g_scope_base_eye_position, g_scope_player_view_base,
+                    relative_center_position);
+                g_roomscale_collision_frame = rf::frame_count;
+                g_head_pose_valid = transform_tracked_pose_to_world(
+                    scope.center_pose, g_scope_base_eye_position,
+                    g_scope_player_view_base,
+                    g_head_position, g_head_orientation);
+                update_weapon_pose(
+                    g_scope_base_eye_position, g_scope_player_view_base);
+            }
+            if (!copy_d3d11_menu(scope.texture) && !copy_failure_logged) {
+                copy_failure_logged = true;
+                xlog::error(
+                    "[AFVR] Native rifle scope target could not be copied to the OpenXR quad");
+            }
+        });
+#endif
+    }
+
     void shutdown()
     {
 #ifdef AF_ENABLE_OPENXR
@@ -3013,6 +3507,10 @@ namespace afvr
         clear_mounted_aim_state();
         g_mounted_aim_logged = false;
         g_vehicle_controls_logged = false;
+        g_local_attachment_active = false;
+        g_local_attachment_entity_handle = -1;
+        g_vehicle_exit_horizon_stabilization = false;
+        g_vehicle_exit_level_frames = 0;
         g_movement_input_logged = false;
         g_ladder_input_logged = false;
         g_snap_turn_logged = false;
@@ -3028,13 +3526,21 @@ namespace afvr
         g_two_hand_support_available = false;
         g_two_hand_weapon_active = false;
         g_two_hand_weapon_id = -1;
+        g_two_hand_calibration_active = false;
+        g_two_hand_calibration_weapon_id = -1;
         g_right_controller_pose_valid = false;
         g_controller_grip_world_valid = false;
         g_controller_aim_world_valid = false;
+        g_left_controller_grip_world_valid = false;
+        g_left_controller_aim_world_valid = false;
         g_controller_grip_world_position = {};
         g_controller_grip_world_orientation = {};
         g_controller_aim_world_position = {};
         g_controller_aim_world_orientation = {};
+        g_left_controller_grip_world_position = {};
+        g_left_controller_grip_world_orientation = {};
+        g_left_controller_aim_world_position = {};
+        g_left_controller_aim_world_orientation = {};
         g_head_pose_valid = false;
         g_latest_center_tracking_position_valid = false;
         g_latest_player_view_base_valid = false;
@@ -3054,6 +3560,10 @@ namespace afvr
         g_frame_limiter_bypassed = false;
         g_multiplayer_best_effort_logged = false;
         g_menu_capture_active = false;
+        g_scope_capture_active = false;
+        g_scope_view_base_valid = false;
+        g_scope_base_eye_position = {};
+        g_scope_player_view_base = {};
         g_steamvr_menu_chord_started = {};
         g_steamvr_menu_chord_timing = false;
         g_roomscale_world_correction = {};
@@ -3121,6 +3631,7 @@ namespace afvr
         g_last_menu_state = rf::GS_INIT;
         g_weapon_calibration_logged = {};
         g_live_weapon_calibration_active = {};
+        g_live_two_hand_calibration_active = {};
 #endif
     }
 
@@ -3151,6 +3662,16 @@ namespace afvr
     {
 #ifdef AF_ENABLE_OPENXR
         return g_openxr && g_openxr->is_session_running() && g_menu_capture_active;
+#else
+        return false;
+#endif
+    }
+
+    bool is_scope_capture_active()
+    {
+#ifdef AF_ENABLE_OPENXR
+        return g_openxr && g_openxr->is_session_running() &&
+            g_scope_capture_active;
 #else
         return false;
 #endif

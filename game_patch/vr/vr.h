@@ -56,6 +56,11 @@ namespace afvr
     // Called by the existing menu renderer after it has drawn its cursor/widgets.
     void submit_menu_frame();
 
+    // Copy the completed native zoom/scope frame into a head-following OpenXR
+    // quad. Precision- and sniper-rifle scopes use this instead of stereo world
+    // rendering until alternate fire closes the scope.
+    void submit_scope_frame();
+
     // Release all local OpenXR state. Safe to call more than once.
     void shutdown();
 
@@ -63,6 +68,7 @@ namespace afvr
     [[nodiscard]] bool is_initialized();
     [[nodiscard]] bool is_session_running();
     [[nodiscard]] bool is_menu_capture_active();
+    [[nodiscard]] bool is_scope_capture_active();
     [[nodiscard]] bool should_update_desktop_mirror();
 
     // Physical mouse input remains available in RF's main menu, but must not

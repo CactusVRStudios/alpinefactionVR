@@ -78,6 +78,7 @@ struct GameConfig
 
     // VR / OpenXR (singleplayer only)
     CfgVar<bool> vr_enabled = true;
+    CfgVar<bool> vr_fast_weapon_switch = false;
     enum class VrTurnMode
     {
         snap = 0,

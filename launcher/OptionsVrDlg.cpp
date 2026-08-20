@@ -17,6 +17,8 @@ BOOL OptionsVrDlg::OnInitDialog()
     m_turn_mode_combo.AddString("Smooth turn");
 
     CheckDlgButton(IDC_ENABLE_VR_CHECK, m_conf.vr_enabled ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(IDC_VR_FAST_WEAPON_SWITCH_CHECK,
+        m_conf.vr_fast_weapon_switch ? BST_CHECKED : BST_UNCHECKED);
     m_turn_mode_combo.SetCurSel(static_cast<int>(m_conf.vr_turn_mode.value()));
     SetDlgItemInt(IDC_VR_SNAP_ANGLE_EDIT, m_conf.vr_snap_turn_degrees, false);
     SetDlgItemInt(IDC_VR_SMOOTH_SPEED_EDIT,
@@ -33,6 +35,8 @@ BOOL OptionsVrDlg::OnInitDialog()
         "Snap-turn angle in degrees (15 to 180).");
     m_tool_tip.AddTool(GetDlgItem(IDC_VR_SMOOTH_SPEED_EDIT),
         "Maximum smooth-turn speed in degrees per second (30 to 360).");
+    m_tool_tip.AddTool(GetDlgItem(IDC_VR_FAST_WEAPON_SWITCH_CHECK),
+        "Equip the next or previous weapon immediately instead of opening the confirmation HUD.");
     return TRUE;
 }
 
@@ -54,6 +58,8 @@ BOOL OptionsVrDlg::OnCommand(WPARAM wparam, [[maybe_unused]] LPARAM lparam)
 void OptionsVrDlg::OnSave()
 {
     m_conf.vr_enabled = IsDlgButtonChecked(IDC_ENABLE_VR_CHECK) == BST_CHECKED;
+    m_conf.vr_fast_weapon_switch =
+        IsDlgButtonChecked(IDC_VR_FAST_WEAPON_SWITCH_CHECK) == BST_CHECKED;
     m_conf.vr_turn_mode = static_cast<GameConfig::VrTurnMode>(
         std::max(m_turn_mode_combo.GetCurSel(), 0));
     m_conf.vr_snap_turn_degrees = GetDlgItemInt(IDC_VR_SNAP_ANGLE_EDIT, false);
@@ -70,6 +76,7 @@ void OptionsVrDlg::UpdateControlState()
     const bool smooth = m_turn_mode_combo.GetCurSel() ==
         static_cast<int>(GameConfig::VrTurnMode::smooth);
     m_turn_mode_combo.EnableWindow(vr_enabled);
+    GetDlgItem(IDC_VR_FAST_WEAPON_SWITCH_CHECK).EnableWindow(vr_enabled);
     GetDlgItem(IDC_VR_SNAP_ANGLE_EDIT).EnableWindow(vr_enabled && !smooth);
     GetDlgItem(IDC_VR_SMOOTH_SPEED_EDIT).EnableWindow(vr_enabled && smooth);
 }
