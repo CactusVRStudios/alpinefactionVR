@@ -178,6 +178,7 @@ namespace afvr
         rf::Vector3 g_roomscale_world_correction{};
         int g_roomscale_collision_frame = -1;
         bool g_roomscale_collision_logged = false;
+        bool g_roomscale_reconciliation_logged = false;
         std::chrono::steady_clock::time_point g_next_desktop_mirror_update{};
         int g_desktop_mirror_decision_frame = -1;
         bool g_desktop_mirror_update_due = false;
@@ -1079,6 +1080,158 @@ namespace afvr
                 -(position.z - g_tracking_origin.position.z),
             };
             return transform_direction(tracking_yaw_neutralizer(), converted_delta);
+        }
+
+        rf::Vector3 move_roomscale_body_with_collision(rf::Entity* entity,
+            const rf::Vector3& requested_delta)
+        {
+            const float movement_length = requested_delta.len();
+            if (!entity || movement_length <= 0.0001f) {
+                return {};
+            }
+
+            const rf::Vector3 direction = requested_delta / movement_length;
+            float accepted_fraction = 1.0f;
+            constexpr int collision_flags = rf::CF_PROCESS_INVISIBLE_FACES;
+            constexpr float wall_skin = 0.01f;
+
+            const auto sweep_sphere = [&](const rf::Vector3& local_center,
+                                          float radius) {
+                rf::Vector3 start = entity->pos +
+                    transform_direction(entity->orient, local_center);
+                rf::Vector3 desired = start + requested_delta;
+                rf::PCollisionOut collision{};
+                collision.obj_handle = -1;
+                if (!rf::collide_sphereline_world(
+                        &start, &desired, std::max(radius, 0.01f),
+                        collision_flags, entity, nullptr, &collision)) {
+                    return;
+                }
+
+                // A horizontal room-scale step must not be rejected by a
+                // floor/ceiling contact tangent to the requested movement.
+                const rf::Vector3 horizontal_normal{
+                    collision.hit_normal.x, 0.0f, collision.hit_normal.z};
+                if (horizontal_normal.len() <= 0.0001f ||
+                    horizontal_normal.dot_prod(direction) >= -0.0001f) {
+                    return;
+                }
+
+                float collision_distance = collision.hit_time * movement_length;
+                if (!std::isfinite(collision.hit_time) ||
+                    collision.hit_time < 0.0f || collision.hit_time > 1.0f) {
+                    collision_distance = std::clamp(
+                        (collision.hit_point - start).dot_prod(direction),
+                        0.0f, movement_length);
+                }
+                const float safe_distance = std::max(
+                    collision_distance - wall_skin, 0.0f);
+                accepted_fraction = std::min(
+                    accepted_fraction, safe_distance / movement_length);
+            };
+
+            if (entity->p_data.cspheres.size() > 0) {
+                for (int i = 0; i < entity->p_data.cspheres.size(); ++i) {
+                    const auto& sphere = entity->p_data.cspheres[i];
+                    sweep_sphere(sphere.center, sphere.radius);
+                }
+            }
+            else {
+                sweep_sphere({}, std::max(entity->p_data.radius, 0.16f));
+            }
+
+            const rf::Vector3 body_position_before = entity->pos;
+            const rf::Vector3 physics_position_before = entity->p_data.pos;
+            const rf::Vector3 physics_next_position_before =
+                entity->p_data.next_pos;
+            const rf::Vector3 accepted_request =
+                requested_delta * std::clamp(accepted_fraction, 0.0f, 1.0f);
+            rf::Vector3 new_position = body_position_before + accepted_request;
+
+            // Object::move is RF's object-position seam: it updates the object
+            // position, bounding box and room membership. Preserve the native
+            // physics trajectory by translating both physics positions by the
+            // exact same collision-constrained amount.
+            entity->move(&new_position);
+            const rf::Vector3 accepted_delta =
+                entity->pos - body_position_before;
+            entity->p_data.pos = physics_position_before + accepted_delta;
+            entity->p_data.next_pos =
+                physics_next_position_before + accepted_delta;
+            return accepted_delta;
+        }
+
+        rf::Vector3 reconcile_roomscale_body(const XrVector3f& raw_hmd_position,
+            const rf::Matrix3& view_base)
+        {
+            if (!g_tracking_origin.valid || rf::is_multi ||
+                g_menu_capture_active ||
+                rf::gameseq_get_state() != rf::GS_GAMEPLAY ||
+                !rf::local_player) {
+                return {};
+            }
+
+            auto* entity = rf::entity_from_handle(
+                rf::local_player->entity_handle);
+            if (!entity || rf::entity_is_dying(entity) ||
+                rf::entity_in_vehicle(entity) ||
+                rf::entity_is_on_turret(entity) ||
+                rf::entity_is_jeep_gunner(entity)) {
+                return {};
+            }
+
+            const rf::Vector3 local_head_offset =
+                relative_tracking_position(raw_hmd_position);
+            const rf::Vector3 local_horizontal{
+                local_head_offset.x, 0.0f, local_head_offset.z};
+            constexpr float reconciliation_epsilon = 0.015f;
+            if (local_horizontal.len() <= reconciliation_epsilon) {
+                return {};
+            }
+
+            const rf::Matrix3 body_yaw = level_yaw_orientation(view_base);
+            const rf::Vector3 requested_body_delta =
+                transform_direction(body_yaw, local_horizontal);
+            const rf::Vector3 body_position_before = entity->pos;
+            const rf::Vector3 accepted_body_delta =
+                move_roomscale_body_with_collision(
+                    entity, requested_body_delta);
+
+            // Consume only the movement RF actually accepted. Convert that
+            // world delta back through body yaw and the inverse recenter-yaw
+            // neutralizer to advance the raw OpenXR reference. Head and hands
+            // consequently remain fixed in world space without per-device fixes.
+            rf::Vector3 accepted_local =
+                direction_in_basis(body_yaw, accepted_body_delta);
+            accepted_local.y = 0.0f;
+            const rf::Vector3 accepted_tracking_rf = transform_direction(
+                euler_rotation_matrix({0.0f, g_tracking_origin.yaw, 0.0f}),
+                accepted_local);
+            g_tracking_origin.position.x += accepted_tracking_rf.x;
+            g_tracking_origin.position.z -= accepted_tracking_rf.z;
+
+            const rf::Vector3 remaining_local =
+                relative_tracking_position(raw_hmd_position);
+            if (!g_roomscale_reconciliation_logged) {
+                g_roomscale_reconciliation_logged = true;
+                xlog::info(
+                    "[AFVR][ROOMSCALE] raw_hmd=({:.3f},{:.3f},{:.3f}) tracking_ref=({:.3f},{:.3f},{:.3f}) local_horizontal=({:.3f},{:.3f}) requested=({:.3f},{:.3f},{:.3f}) accepted=({:.3f},{:.3f},{:.3f}) body_before=({:.3f},{:.3f},{:.3f}) body_after=({:.3f},{:.3f},{:.3f}) remaining_local=({:.3f},{:.3f})",
+                    raw_hmd_position.x, raw_hmd_position.y,
+                    raw_hmd_position.z,
+                    g_tracking_origin.position.x,
+                    g_tracking_origin.position.y,
+                    g_tracking_origin.position.z,
+                    local_horizontal.x, local_horizontal.z,
+                    requested_body_delta.x, requested_body_delta.y,
+                    requested_body_delta.z,
+                    accepted_body_delta.x, accepted_body_delta.y,
+                    accepted_body_delta.z,
+                    body_position_before.x, body_position_before.y,
+                    body_position_before.z,
+                    entity->pos.x, entity->pos.y, entity->pos.z,
+                    remaining_local.x, remaining_local.z);
+            }
+            return accepted_body_delta;
         }
 
         void begin_turn_diagnostic(const rf::Entity* entity)
@@ -2178,9 +2331,11 @@ namespace afvr
                     !g_rendering_weapon && !g_menu_capture_active &&
                     !g_scope_capture_active) {
                     const rf::Vector3 base_eye_pos = rf::gr::eye_pos;
+                    rf::Vector3 reconciled_base_eye_pos = base_eye_pos;
                     const rf::Matrix3 base_eye_matrix = rf::gr::eye_matrix;
                     const float base_horizontal_fov = addr_as_ref<float>(0x0059613C);
                     bool renderer_was_redirected = false;
+                    bool roomscale_reconciled = false;
                     std::vector<StereoRoomRenderState> left_eye_room_state;
 
                     // AFVR TODO: Replace RF's shared desktop CPU frustum with a
@@ -2192,6 +2347,14 @@ namespace afvr
                             g_latest_center_tracking_position_valid = true;
                             if (!g_tracking_origin.valid || g_recenter_requested) {
                                 capture_tracking_origin(eye.center_pose);
+                            }
+
+                            const rf::Matrix3 vr_view_base =
+                                mounted_vr_view_base(base_eye_matrix);
+                            if (!roomscale_reconciled) {
+                                reconciled_base_eye_pos += reconcile_roomscale_body(
+                                    eye.center_pose.position, vr_view_base);
+                                roomscale_reconciled = true;
                             }
 
                             const rf::Vector3 relative_rf_position =
@@ -2212,20 +2375,18 @@ namespace afvr
                             g_hmd_relative_forward_y =
                                 std::clamp(relative_rf_orientation.fvec.y, -1.0f, 1.0f);
 
-                            const rf::Matrix3 vr_view_base =
-                                mounted_vr_view_base(base_eye_matrix);
                             const rf::Vector3 relative_center_position =
                                 relative_tracking_position(
                                     eye.center_pose.position);
                             if (g_roomscale_collision_frame != rf::frame_count) {
                                 g_roomscale_world_correction =
                                     roomscale_collision_correction(
-                                        base_eye_pos, vr_view_base,
+                                        reconciled_base_eye_pos, vr_view_base,
                                         relative_center_position);
                                 g_roomscale_collision_frame = rf::frame_count;
                             }
 
-                            rf::Vector3 eye_pos = base_eye_pos +
+                            rf::Vector3 eye_pos = reconciled_base_eye_pos +
                                 transform_direction(vr_view_base, relative_rf_position) +
                                 g_roomscale_world_correction;
                             rf::Matrix3 eye_matrix = compose_orientation(
@@ -2235,11 +2396,11 @@ namespace afvr
                             // Cache it in world space for simulation paths that
                             // execute before the next stereo render traversal.
                             g_head_pose_valid = transform_tracked_pose_to_world(
-                                eye.center_pose, base_eye_pos, vr_view_base,
+                                eye.center_pose, reconciled_base_eye_pos, vr_view_base,
                                 g_head_position, g_head_orientation);
                             update_resolved_player_pose(relative_center_position);
 
-                            update_weapon_pose(base_eye_pos, vr_view_base);
+                            update_weapon_pose(reconciled_base_eye_pos, vr_view_base);
                             if (g_debug_weapon_at_hmd && g_weapon_pose_valid) {
                                 // Development discriminator: this bypasses the
                                 // controller translation and places the weapon
@@ -2247,7 +2408,8 @@ namespace afvr
                                 rf::Vector3 hmd_center_position{};
                                 rf::Matrix3 hmd_center_orientation{};
                                 if (transform_tracked_pose_to_world(
-                                        eye.center_pose, base_eye_pos, base_eye_matrix,
+                                        eye.center_pose, reconciled_base_eye_pos,
+                                        base_eye_matrix,
                                         hmd_center_position, hmd_center_orientation)) {
                                     g_weapon_render_position = hmd_center_position +
                                         hmd_center_orientation.fvec * 0.5f;
@@ -2309,7 +2471,7 @@ namespace afvr
                             // must see RF's center gameplay camera, not the right
                             // eye globals left by the final stereo traversal.
                             rf::Matrix3 hud_eye_matrix = base_eye_matrix;
-                            rf::Vector3 hud_eye_pos = base_eye_pos;
+                            rf::Vector3 hud_eye_pos = reconciled_base_eye_pos;
                             rf::gr::setup_3d(hud_eye_matrix, hud_eye_pos,
                                 base_horizontal_fov, true, true);
                             begin_d3d11_hud(
@@ -2332,7 +2494,7 @@ namespace afvr
                     stereo_world_rendered = frame_submitted;
 
                     rf::Matrix3 restored_eye_matrix = base_eye_matrix;
-                    rf::Vector3 restored_eye_pos = base_eye_pos;
+                    rf::Vector3 restored_eye_pos = reconciled_base_eye_pos;
                     rf::gr::setup_3d(restored_eye_matrix, restored_eye_pos,
                         base_horizontal_fov, true, true);
                     if (renderer_was_redirected) {
@@ -3251,6 +3413,7 @@ namespace afvr
             g_resolved_pose_logged = false;
             g_roomscale_world_correction = {};
             g_roomscale_collision_frame = -1;
+            g_roomscale_reconciliation_logged = false;
             clear_mounted_aim_state();
         }
         if (g_openxr && !g_openxr->poll_events()) {
@@ -3742,6 +3905,7 @@ namespace afvr
         g_roomscale_world_correction = {};
         g_roomscale_collision_frame = -1;
         g_roomscale_collision_logged = false;
+        g_roomscale_reconciliation_logged = false;
         g_next_desktop_mirror_update = {};
         g_desktop_mirror_decision_frame = -1;
         g_desktop_mirror_update_due = false;
