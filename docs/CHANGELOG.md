@@ -1,6 +1,17 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
+Alpine Faction VR 0.8 (`vr08-synced-fire-test`): Released Aug-20-2026
+--------------------------------
+### Release status
+- Successful synced-fire test pass; ready for public VR 0.8 distribution.
+- Update packages should be published as both the Alpine Faction VR installer and the basic ZIP package.
+
+### VR changes
+- Fix 6DoF hand position and rotation transforms so weapon pose follows the tracked controllers correctly.
+- Add configurable shake-to-reload support for VR controllers.
+- Fix gun aiming alignment, including the synchronized weapon-fire pose and laser emitter transform.
+
 Version 1.4.0 (Lupin): Not yet released
 --------------------------------
 ### Major features

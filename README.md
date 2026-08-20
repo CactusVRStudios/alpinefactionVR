@@ -4,10 +4,12 @@
 
 # Alpine Faction VR
 
-Alpine Faction VR is a highly experimental virtual-reality implementation for the 2001 FPS **Red Faction**, built on top of [Alpine Faction](https://github.com/GooberRF/alpinefaction).
+Alpine Faction VR 0.8 is a tested virtual-reality implementation for the 2001 FPS **Red Faction**, built on top of [Alpine Faction](https://github.com/GooberRF/alpinefaction).
 
 > [!CAUTION]
-> This is an early alpha. It is incomplete, probably does not work correctly on many systems, and may crash or cause severe visual, input, or gameplay issues. Back up your files and saves before trying it.
+> This is an early VR release. It has passed the `vr08-synced-fire-test`, but remains experimental and may still crash or cause visual, input, or gameplay issues on some systems. Back up your files and saves before trying it.
+
+The current release is **Alpine Faction VR 0.8** (`vr08-synced-fire-test`).
 
 ## Current scope
 
@@ -144,7 +146,7 @@ The pinned Khronos OpenXR SDK is fetched during configuration, and the 32-bit lo
 After building the OpenXR-enabled Release configuration, create both supported release artifacts with:
 
 ```powershell
-.\tools\make-vr-release.ps1 -Version "alpha-0.7" -BuildDir ".\build-afvr\bin\Release"
+.\tools\make-vr-release.ps1 -Version "0.8" -BuildDir ".\build-afvr\bin\Release"
 ```
 
 The script always creates a basic ZIP and, when Inno Setup 6 and the patch payload in `setup/patches/output` are available, a one-step installer. Use `-SkipInstaller` when only the ZIP is needed.
