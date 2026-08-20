@@ -117,5 +117,11 @@ namespace afvr
     // submission for local launch paths that intentionally follow
     // the player's six-degree look direction rather than body/stick yaw.
     [[nodiscard]] bool get_head_pose(rf::Vector3& position, rf::Matrix3& orientation);
+
+    // Local player's resolved visual body pose. Gameplay/collision continues
+    // to use the native entity transform; this pose is for character rendering
+    // (including mirrors, third person, attachments, and shadows).
+    [[nodiscard]] bool get_visual_body_pose(rf::Vector3& position,
+        rf::Matrix3& orientation);
     [[nodiscard]] bool is_primary_trigger_active();
 }

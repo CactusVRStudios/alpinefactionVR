@@ -12,13 +12,17 @@ $ErrorActionPreference = "Stop"
 $repoDir = Split-Path $PSScriptRoot -Parent
 $BuildDir = [System.IO.Path]::GetFullPath($BuildDir, (Get-Location).Path)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir, (Get-Location).Path)
-$payloadDir = Join-Path $OutputDir "AlpineFactionVR-$Version"
+# Keep the extracted payload path deliberately short. Red Faction's legacy
+# packfile loader has a small fixed path buffer; a versioned nested directory
+# can prevent alpinefaction.vpp (and therefore the D3D11 shaders) from loading.
+$payloadFolderName = "VR Mod"
+$payloadDir = Join-Path $OutputDir $payloadFolderName
 $zipPath = Join-Path $OutputDir "AlpineFactionVR-$Version.zip"
 $requiredFiles = @("AlpineFactionVR.exe", "CrashHandler.exe", "AlpineEditor.dll", "AlpineFaction.dll", "d3d8to9.dll", "alpinefaction.vpp", "licensing-info.txt")
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 if (Test-Path -LiteralPath $payloadDir) {
-    if ((Split-Path $payloadDir -Parent) -ne $OutputDir -or (Split-Path $payloadDir -Leaf) -ne "AlpineFactionVR-$Version") {
+    if ((Split-Path $payloadDir -Parent) -ne $OutputDir -or (Split-Path $payloadDir -Leaf) -ne $payloadFolderName) {
         throw "Refusing to clean unexpected payload path: $payloadDir"
     }
     Remove-Item -LiteralPath $payloadDir -Recurse -Force
@@ -35,7 +39,7 @@ foreach ($file in $requiredFiles) {
 }
 Copy-Item -LiteralPath (Join-Path $repoDir "README.md") -Destination (Join-Path $payloadDir "README-VR.md") -Force
 Copy-Item -LiteralPath (Join-Path $repoDir "LICENSE.txt") -Destination $payloadDir -Force
-Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
+Compress-Archive -Path $payloadDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
 Write-Host "Created basic ZIP: $zipPath"
 
 if (-not $SkipInstaller) {

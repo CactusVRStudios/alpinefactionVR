@@ -34,6 +34,28 @@ namespace
 {
     bool g_ejecting_local_vr_shell = false;
 
+    FunHook<void(rf::Entity*)> entity_render_vr_body_hook{
+        0x00421850,
+        [](rf::Entity* entity) {
+            if (entity && entity == rf::local_player_entity) {
+                rf::Vector3 visual_position{};
+                rf::Matrix3 visual_orientation{};
+                if (afvr::get_visual_body_pose(
+                        visual_position, visual_orientation)) {
+                    const rf::Vector3 native_position = entity->pos;
+                    const rf::Matrix3 native_orientation = entity->orient;
+                    entity->pos = visual_position;
+                    entity->orient = visual_orientation;
+                    entity_render_vr_body_hook.call_target(entity);
+                    entity->pos = native_position;
+                    entity->orient = native_orientation;
+                    return;
+                }
+            }
+            entity_render_vr_body_hook.call_target(entity);
+        },
+    };
+
     FunHook<void(rf::Entity*)> entity_eject_shell_vr_hook{
         0x0042A1D0,
         [](rf::Entity* entity) {
@@ -713,6 +735,8 @@ CodeInjection clear_stale_movement_input_injection{
 
 void entity_do_patch()
 {
+    entity_render_vr_body_hook.install();
+
     //player_create_entity_patch.install(); // force team skin experiment
 
     // Handle toggle for pain sounds
