@@ -80,9 +80,9 @@ struct GameConfig
     CfgVar<bool> vr_enabled = true;
     CfgVar<bool> vr_fast_weapon_switch = false;
     CfgVar<bool> vr_shake_reload = false;
-    // User-tunable downward controller speed in cm/s. Keep the default
-    // conservative, but do not impose a lower bound on experimentation.
-    CfgVar<unsigned> vr_shake_reload_threshold_cm_s = 180;
+    // User-tunable downward controller speed in cm/s, with no imposed lower
+    // bound so sensitivity can be adjusted freely.
+    CfgVar<unsigned> vr_shake_reload_threshold_cm_s = 20;
     enum class VrTurnMode
     {
         snap = 0,
@@ -92,7 +92,7 @@ struct GameConfig
     CfgVar<unsigned> vr_snap_turn_degrees{
         60, [](auto val) { return std::clamp(val, 15u, 180u); }};
     CfgVar<unsigned> vr_smooth_turn_degrees_per_second{
-        120, [](auto val) { return std::clamp(val, 30u, 360u); }};
+        230, [](auto val) { return std::clamp(val, 30u, 360u); }};
 
     // Internal
     CfgVar<std::string> alpine_faction_version{""};
