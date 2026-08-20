@@ -173,6 +173,11 @@ namespace afvr
         bool g_gameplay_input_blocked_until_release = false;
         bool g_reload_pressed = false;
         bool g_reload_just_pressed = false;
+        bool g_shake_reload_just_pressed = false;
+        bool g_previous_right_grip_y_valid = false;
+        float g_previous_right_grip_y = 0.0f;
+        float g_previous_right_grip_velocity = 0.0f;
+        float g_shake_reload_cooldown = 0.0f;
         bool g_jump_pressed = false;
         bool g_jump_just_pressed = false;
         bool g_crouch_pressed = false;
@@ -3200,6 +3205,40 @@ namespace afvr
                 g_menu_pointer_valid = false;
             }
             const auto& input = g_openxr->input_state();
+            g_shake_reload_just_pressed = false;
+            if (g_game_config.vr_shake_reload &&
+                g_openxr->is_session_running() &&
+                !g_menu_capture_active && input.grip_pose_valid[1]) {
+                const float current_y = input.grip_poses[1].position.y;
+                const float frame_seconds = std::max(rf::frametime, 0.0001f);
+                const float downward_threshold =
+                    static_cast<float>(g_game_config.vr_shake_reload_threshold_cm_s) / 100.0f;
+                if (g_previous_right_grip_y_valid) {
+                    const float velocity =
+                        (current_y - g_previous_right_grip_y) / frame_seconds;
+                    g_shake_reload_cooldown = std::max(
+                        0.0f, g_shake_reload_cooldown - frame_seconds);
+                    if (g_shake_reload_cooldown <= 0.0f &&
+                        velocity <= -downward_threshold &&
+                        g_previous_right_grip_velocity > -downward_threshold * 0.5f) {
+                        g_shake_reload_just_pressed = true;
+                        g_shake_reload_cooldown = 0.30f;
+                        xlog::info(
+                            "[AFVR] Shake reload triggered by right controller downward motion");
+                    }
+                    g_previous_right_grip_velocity = velocity;
+                }
+                else {
+                    g_previous_right_grip_velocity = 0.0f;
+                }
+                g_previous_right_grip_y = current_y;
+                g_previous_right_grip_y_valid = true;
+            }
+            else {
+                g_previous_right_grip_y_valid = false;
+                g_previous_right_grip_velocity = 0.0f;
+                g_shake_reload_cooldown = 0.0f;
+            }
             const bool steamvr_menu_chord_buttons =
                 g_openxr->is_steamvr_runtime() &&
                 input.reload && input.crouch;
@@ -3259,7 +3298,8 @@ namespace afvr
             }
             g_previous_laser_toggle_pressed = laser_toggle_pressed;
             g_left_grip_pressed = g_openxr->is_session_running() && input.grip[0] >= 0.55f;
-            g_reload_just_pressed = g_reload_pressed && !g_previous_reload;
+            g_reload_just_pressed =
+                (g_reload_pressed && !g_previous_reload) || g_shake_reload_just_pressed;
             g_jump_just_pressed = g_jump_pressed && !g_previous_jump;
             g_crouch_just_pressed = g_crouch_pressed && !g_previous_crouch;
             g_holster_just_pressed = g_holster_pressed && !g_previous_holster;
@@ -3592,6 +3632,11 @@ namespace afvr
         g_gameplay_input_blocked_until_release = false;
         g_reload_pressed = false;
         g_reload_just_pressed = false;
+        g_shake_reload_just_pressed = false;
+        g_previous_right_grip_y_valid = false;
+        g_previous_right_grip_y = 0.0f;
+        g_previous_right_grip_velocity = 0.0f;
+        g_shake_reload_cooldown = 0.0f;
         g_jump_pressed = false;
         g_jump_just_pressed = false;
         g_crouch_pressed = false;

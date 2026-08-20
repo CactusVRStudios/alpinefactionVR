@@ -19,10 +19,14 @@ BOOL OptionsVrDlg::OnInitDialog()
     CheckDlgButton(IDC_ENABLE_VR_CHECK, m_conf.vr_enabled ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_VR_FAST_WEAPON_SWITCH_CHECK,
         m_conf.vr_fast_weapon_switch ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(IDC_VR_SHAKE_RELOAD_CHECK,
+        m_conf.vr_shake_reload ? BST_CHECKED : BST_UNCHECKED);
     m_turn_mode_combo.SetCurSel(static_cast<int>(m_conf.vr_turn_mode.value()));
     SetDlgItemInt(IDC_VR_SNAP_ANGLE_EDIT, m_conf.vr_snap_turn_degrees, false);
     SetDlgItemInt(IDC_VR_SMOOTH_SPEED_EDIT,
         m_conf.vr_smooth_turn_degrees_per_second, false);
+    SetDlgItemInt(IDC_VR_SHAKE_RELOAD_THRESHOLD_EDIT,
+        m_conf.vr_shake_reload_threshold_cm_s, false);
     m_display_dlg.SetVrEnabled(m_conf.vr_enabled);
     UpdateControlState();
 
@@ -37,6 +41,10 @@ BOOL OptionsVrDlg::OnInitDialog()
         "Maximum smooth-turn speed in degrees per second (30 to 360).");
     m_tool_tip.AddTool(GetDlgItem(IDC_VR_FAST_WEAPON_SWITCH_CHECK),
         "Equip the next or previous weapon immediately instead of opening the confirmation HUD.");
+    m_tool_tip.AddTool(GetDlgItem(IDC_VR_SHAKE_RELOAD_CHECK),
+        "Reload by making one forceful downward shake with the right controller.");
+    m_tool_tip.AddTool(GetDlgItem(IDC_VR_SHAKE_RELOAD_THRESHOLD_EDIT),
+        "Downward controller speed required to trigger shake reload (80 to 400 cm/s).");
     return TRUE;
 }
 
@@ -52,6 +60,10 @@ BOOL OptionsVrDlg::OnCommand(WPARAM wparam, [[maybe_unused]] LPARAM lparam)
         UpdateControlState();
         return TRUE;
     }
+    if (LOWORD(wparam) == IDC_VR_SHAKE_RELOAD_CHECK && HIWORD(wparam) == BN_CLICKED) {
+        UpdateControlState();
+        return TRUE;
+    }
     return FALSE;
 }
 
@@ -60,11 +72,15 @@ void OptionsVrDlg::OnSave()
     m_conf.vr_enabled = IsDlgButtonChecked(IDC_ENABLE_VR_CHECK) == BST_CHECKED;
     m_conf.vr_fast_weapon_switch =
         IsDlgButtonChecked(IDC_VR_FAST_WEAPON_SWITCH_CHECK) == BST_CHECKED;
+    m_conf.vr_shake_reload =
+        IsDlgButtonChecked(IDC_VR_SHAKE_RELOAD_CHECK) == BST_CHECKED;
     m_conf.vr_turn_mode = static_cast<GameConfig::VrTurnMode>(
         std::max(m_turn_mode_combo.GetCurSel(), 0));
     m_conf.vr_snap_turn_degrees = GetDlgItemInt(IDC_VR_SNAP_ANGLE_EDIT, false);
     m_conf.vr_smooth_turn_degrees_per_second =
         GetDlgItemInt(IDC_VR_SMOOTH_SPEED_EDIT, false);
+    m_conf.vr_shake_reload_threshold_cm_s =
+        GetDlgItemInt(IDC_VR_SHAKE_RELOAD_THRESHOLD_EDIT, false);
     if (m_conf.vr_enabled) {
         m_conf.renderer = GameConfig::Renderer::d3d11;
     }
@@ -77,6 +93,9 @@ void OptionsVrDlg::UpdateControlState()
         static_cast<int>(GameConfig::VrTurnMode::smooth);
     m_turn_mode_combo.EnableWindow(vr_enabled);
     GetDlgItem(IDC_VR_FAST_WEAPON_SWITCH_CHECK).EnableWindow(vr_enabled);
+    GetDlgItem(IDC_VR_SHAKE_RELOAD_CHECK).EnableWindow(vr_enabled);
+    GetDlgItem(IDC_VR_SHAKE_RELOAD_THRESHOLD_EDIT).EnableWindow(
+        vr_enabled && IsDlgButtonChecked(IDC_VR_SHAKE_RELOAD_CHECK) == BST_CHECKED);
     GetDlgItem(IDC_VR_SNAP_ANGLE_EDIT).EnableWindow(vr_enabled && !smooth);
     GetDlgItem(IDC_VR_SMOOTH_SPEED_EDIT).EnableWindow(vr_enabled && smooth);
 }

@@ -165,6 +165,8 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(alpine_faction_key, "Reduced Speed In Background", reduced_speed_in_background);
     result &= visitor(alpine_faction_key, "Enable VR", vr_enabled);
     result &= visitor(alpine_faction_key, "VR Fast Weapon Switch", vr_fast_weapon_switch);
+    result &= visitor(alpine_faction_key, "VR Shake Reload", vr_shake_reload);
+    result &= visitor(alpine_faction_key, "VR Shake Reload Threshold", vr_shake_reload_threshold_cm_s);
     result &= visitor(alpine_faction_key, "VR Turn Mode", vr_turn_mode);
     result &= visitor(alpine_faction_key, "VR Snap Turn Degrees", vr_snap_turn_degrees);
     result &= visitor(alpine_faction_key, "VR Smooth Turn Degrees Per Second", vr_smooth_turn_degrees_per_second);

@@ -79,6 +79,9 @@ struct GameConfig
     // VR / OpenXR (singleplayer only)
     CfgVar<bool> vr_enabled = true;
     CfgVar<bool> vr_fast_weapon_switch = false;
+    CfgVar<bool> vr_shake_reload = false;
+    CfgVar<unsigned> vr_shake_reload_threshold_cm_s{
+        180, [](auto val) { return std::clamp(val, 80u, 400u); }};
     enum class VrTurnMode
     {
         snap = 0,

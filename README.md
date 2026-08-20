@@ -41,6 +41,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Ladders:** Look up/down and push the left thumbstick forward to climb
 - **Left thumbstick press:** Holster weapon
 - **Left X:** Reload
+- **Shake to reload:** Optional; when enabled, make one forceful downward shake with the right controller
 - **Left Y:** Toggle flashlight/headlight
 - **Flashlight direction:** Follows the tracked HMD view direction
 - **Left grip:**
@@ -67,6 +68,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Ladders:** Look up/down and push the left thumbstick forward to climb
 - **Left thumbstick press:** Holster weapon
 - **Left A:** Reload
+- **Shake to reload:** Optional; when enabled, make one forceful downward shake with the right controller
 - **Left B:** Toggle flashlight/headlight
 - **Flashlight direction:** Follows the tracked HMD view direction
 - **Left squeeze/grip:**
@@ -85,6 +87,8 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Right controller movement:** Aim and control the weapon
 - **Menu navigation:** Aim with the right controller and select with the right trigger
 - **Menu back:** Right B or hold both A buttons for 0.6 seconds
+
+Shake to reload is disabled by default. Enable it in the launcher under **Options → VR / OpenXR**; the downward-motion threshold can be adjusted there in cm/s.
 
 ### Turrets and vehicles
 
