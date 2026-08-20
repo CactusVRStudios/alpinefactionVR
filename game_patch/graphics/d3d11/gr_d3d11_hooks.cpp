@@ -227,6 +227,15 @@ namespace gr::d3d11
         }
     }
 
+    void render_renderer_vr_world_debug_beam(const rf::Vector3& start,
+        const rf::Vector3& end, const rf::Color& color, float half_width)
+    {
+        if (renderer) {
+            renderer->render_vr_world_debug_beam(
+                start, end, color, half_width);
+        }
+    }
+
     void begin_renderer_vr_hud(ID3D11RenderTargetView* render_target_view,
         int width, int height)
     {

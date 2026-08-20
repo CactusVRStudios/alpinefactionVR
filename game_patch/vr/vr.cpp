@@ -233,6 +233,7 @@ namespace afvr
         bool g_flashlight_semantic_logged = false;
         bool g_menu_semantic_logged = false;
         bool g_laser_sight_enabled = false;
+        bool g_fire_origin_debug_visible = false;
         bool g_previous_laser_toggle_pressed = false;
         int g_laser_trace_frame = -1;
         bool g_laser_trace_valid = false;
@@ -1949,6 +1950,43 @@ namespace afvr
                 g_laser_trace_start, g_laser_trace_end);
         }
 
+        void render_fire_origin_debug()
+        {
+            if (!g_fire_origin_debug_visible || !g_weapon_pose_valid ||
+                !g_weapon_aim_pose_valid || !g_laser_emitter_pose_valid) {
+                return;
+            }
+
+            // These markers intentionally use independent source positions:
+            // green is the gameplay fire point, blue is the visual laser
+            // emitter, and yellow only visualizes the separation between them.
+            constexpr float fire_marker_half_size = 0.08f;
+            constexpr float laser_marker_half_size = 0.05f;
+            constexpr float marker_half_width = 0.004f;
+            const rf::Color fire_color{0, 255, 0, 220};
+            const rf::Color laser_color{0, 128, 255, 220};
+            const rf::Color separation_color{255, 220, 0, 160};
+            const std::array<rf::Vector3, 3> axes{
+                rf::Vector3{1.0f, 0.0f, 0.0f},
+                rf::Vector3{0.0f, 1.0f, 0.0f},
+                rf::Vector3{0.0f, 0.0f, 1.0f},
+            };
+
+            for (const rf::Vector3& axis : axes) {
+                render_d3d11_world_debug_beam(
+                    g_weapon_fire_position - axis * fire_marker_half_size,
+                    g_weapon_fire_position + axis * fire_marker_half_size,
+                    fire_color, marker_half_width);
+                render_d3d11_world_debug_beam(
+                    g_laser_emitter_position - axis * laser_marker_half_size,
+                    g_laser_emitter_position + axis * laser_marker_half_size,
+                    laser_color, marker_half_width);
+            }
+            render_d3d11_world_debug_beam(
+                g_weapon_fire_position, g_laser_emitter_position,
+                separation_color, marker_half_width * 0.5f);
+        }
+
         float conservative_cpu_horizontal_fov(const XrFovf& fov)
         {
             const float horizontal_half_angle = std::max(
@@ -2520,6 +2558,7 @@ namespace afvr
                                 }
                             }
                             render_laser_sight();
+                            render_fire_origin_debug();
                             end_scene_render_pass(static_cast<int>(eye.eye_index));
                             finish_d3d11_eye();
                             if (eye.eye_index == 1 && should_update_desktop_mirror()) {
@@ -3160,9 +3199,15 @@ namespace afvr
         ConsoleCommand2 g_vr_fire_origin_audit_cmd{
             "vr_fire_origin_audit",
             []() {
-                audit_weapon_fire_origin(true);
+                g_fire_origin_debug_visible = !g_fire_origin_debug_visible;
+                rf::console::print(
+                    "VR fire-origin markers: {} (green=fire, blue=laser, yellow=separation)",
+                    g_fire_origin_debug_visible ? "ON" : "OFF");
+                if (g_fire_origin_debug_visible) {
+                    audit_weapon_fire_origin(true);
+                }
             },
-            "Compare the independent gameplay fire point with the visual laser emitter and trace two metres forward",
+            "Toggle visible gameplay fire-point and visual laser-emitter markers",
         };
 
         ConsoleCommand2 g_vr_aim_yaw_cmd{
@@ -4030,6 +4075,7 @@ namespace afvr
         g_flashlight_semantic_logged = false;
         g_menu_semantic_logged = false;
         g_laser_sight_enabled = false;
+        g_fire_origin_debug_visible = false;
         g_previous_laser_toggle_pressed = false;
         g_laser_trace_frame = -1;
         g_laser_trace_valid = false;

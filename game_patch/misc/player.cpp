@@ -446,6 +446,58 @@ FunHook<void(rf::Entity*, int, int, int, int, int)> entity_fire_weapon_hook{
     },
 };
 
+// RF resolves the final gameplay fire transform here after entity_fire_weapon
+// has prepared the entity eye pose. For local players the native code advances
+// that position another 0.2-0.3 m along the eye direction (and some weapon
+// branches use authored tags). In VR the eye pose is already the calibrated
+// muzzle, so that native advance skips close targets. Override the final shared
+// output rather than adding an opposing offset at the earlier eye-pose seam.
+FunHook<void(rf::Entity*, int, rf::Vector3*, rf::Matrix3*, int, int)>
+    entity_get_weapon_fire_transform_hook{
+        0x0041B040,
+        [](rf::Entity* entity, int weapon_type, rf::Vector3* position,
+            rf::Matrix3* orientation, int fire_point_index, int primary_fire) {
+            entity_get_weapon_fire_transform_hook.call_target(
+                entity, weapon_type, position, orientation,
+                fire_point_index, primary_fire);
+
+            const bool is_local_vr_fire =
+                entity && position && orientation && rf::local_player &&
+                !rf::is_multi && afvr::is_session_running() &&
+                entity->handle == rf::local_player->entity_handle;
+            if (!is_local_vr_fire) {
+                return;
+            }
+
+            const rf::Vector3 native_position = *position;
+            rf::Vector3 vr_fire_position{};
+            rf::Matrix3 vr_fire_orientation{};
+            if (!afvr::get_weapon_muzzle_pose(
+                    vr_fire_position, vr_fire_orientation)) {
+                return;
+            }
+
+            *position = vr_fire_position;
+            *orientation = vr_fire_orientation;
+
+            static std::array<bool, 64> final_fire_transform_logged{};
+            if (weapon_type >= 0 &&
+                weapon_type < static_cast<int>(final_fire_transform_logged.size()) &&
+                !final_fire_transform_logged[weapon_type]) {
+                final_fire_transform_logged[weapon_type] = true;
+                const rf::Vector3 removed_native_advance =
+                    native_position - vr_fire_position;
+                xlog::info(
+                    "[AFVR][FINAL_FIRE] weapon={} native=({:.4f},{:.4f},{:.4f}) corrected=({:.4f},{:.4f},{:.4f}) removed_advance=({:.4f},{:.4f},{:.4f}) distance={:.3f}m",
+                    weapon_type,
+                    native_position.x, native_position.y, native_position.z,
+                    vr_fire_position.x, vr_fire_position.y, vr_fire_position.z,
+                    removed_native_advance.x, removed_native_advance.y,
+                    removed_native_advance.z, removed_native_advance.len());
+            }
+        },
+    };
+
 bool is_vr_head_aimed_launch_weapon(int weapon_type)
 {
     // Only actual throwables retain head-directed launches. The flamethrower
@@ -1168,6 +1220,7 @@ void player_do_patch()
     // Allow swapping Assault Rifle primary and alternate fire controls
     player_fire_primary_weapon_hook.install();
     entity_fire_weapon_hook.install();
+    entity_get_weapon_fire_transform_hook.install();
     weapon_create_hook.install();
     stop_continous_primary_fire_patch.install();
     stop_continous_alternate_fire_patch.install();

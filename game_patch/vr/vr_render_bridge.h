@@ -35,6 +35,8 @@ namespace afvr
     void finish_d3d11_eye();
     void render_d3d11_world_laser_beam(const rf::Vector3& start,
         const rf::Vector3& end);
+    void render_d3d11_world_debug_beam(const rf::Vector3& start,
+        const rf::Vector3& end, const rf::Color& color, float half_width);
     void begin_d3d11_hud(ID3D11RenderTargetView* render_target_view,
         int width, int height);
     void finish_d3d11_hud();

@@ -1000,6 +1000,14 @@ namespace gr::d3d11
     void Renderer::render_vr_world_laser_beam(const rf::Vector3& start,
         const rf::Vector3& end)
     {
+        render_vr_world_debug_beam(
+            start, end, rf::Color{255, 0, 0, 72}, 0.009f);
+    }
+
+    void Renderer::render_vr_world_debug_beam(const rf::Vector3& start,
+        const rf::Vector3& end, const rf::Color& beam_color,
+        float beam_half_width)
+    {
         if (!vr_eye_render_target_view_ || !vr_active_eye_projection_) {
             return;
         }
@@ -1036,10 +1044,7 @@ namespace gr::d3d11
                 &desc, nullptr, &vr_world_debug_vertex_buffer_));
         }
 
-        // The accepted marker was 6 cm across. A 70% reduction produces an
-        // 18 mm square beam, while retaining enough volume for stable stereo.
-        constexpr float beam_half_width = 0.009f;
-        const rf::Color beam_color{255, 0, 0, 72};
+        beam_half_width = std::max(beam_half_width, 0.001f);
         const auto make_vertex = [](const rf::Vector3& position,
             const rf::Color& color) {
             return GpuVertex{

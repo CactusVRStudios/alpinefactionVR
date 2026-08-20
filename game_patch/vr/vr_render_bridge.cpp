@@ -49,6 +49,13 @@ namespace afvr
         gr::d3d11::render_renderer_vr_world_laser_beam(start, end);
     }
 
+    void render_d3d11_world_debug_beam(const rf::Vector3& start,
+        const rf::Vector3& end, const rf::Color& color, float half_width)
+    {
+        gr::d3d11::render_renderer_vr_world_debug_beam(
+            start, end, color, half_width);
+    }
+
     void mirror_d3d11_eye(ID3D11ShaderResourceView* source_view, int width, int height)
     {
         gr::d3d11::mirror_renderer_vr_eye(source_view, width, height);
