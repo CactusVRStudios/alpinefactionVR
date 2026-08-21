@@ -1132,8 +1132,9 @@ namespace afvr
             pending_reference_space_pose_in_natural_;
         pending_reference_space_ = XR_NULL_HANDLE;
         pending_reference_space_change_time_ = 0;
+        reset_fixed_quad_poses();
         xlog::info(
-            "[AFVR] Runtime LOCAL recenter compensated; HMD, hands, interaction ray, and artificial yaw remain continuous");
+            "[AFVR] Runtime LOCAL recenter compensated; fixed menu and scope quad poses will be recaptured");
     }
 
     void OpenXrContext::handle_session_state_changed(const XrEventDataSessionStateChanged& event)
@@ -1554,8 +1555,15 @@ namespace afvr
             return;
         }
         scope_active_ = active;
+        scope_pose_valid_ = false;
         xlog::info("[AFVR] Native weapon scope quad {}",
             active ? "enabled" : "hidden");
+    }
+
+    void OpenXrContext::reset_fixed_quad_poses()
+    {
+        menu_pose_valid_ = false;
+        scope_pose_valid_ = false;
     }
 
     void OpenXrContext::set_hud_active(bool active)
@@ -1653,27 +1661,20 @@ namespace afvr
                         menu_anchor_position_ = center_pose.position;
                         (void)horizontal_forward_from_pose(
                             center_pose, menu_horizontal_forward_);
+                        menu_pose_.orientation = yaw_only_orientation_from_forward(
+                            menu_horizontal_forward_);
+                        menu_pose_.position = {
+                            menu_anchor_position_.x +
+                                menu_horizontal_forward_.x * menu_distance_m,
+                            menu_anchor_position_.y,
+                            menu_anchor_position_.z +
+                                menu_horizontal_forward_.z * menu_distance_m,
+                        };
                         menu_pose_valid_ = true;
                         xlog::info(
-                            "[AFVR] RF menu quad yaw-follow enabled {:.1f} m from its stable tracking-space anchor; width {:.3f} m",
+                            "[AFVR] RF menu quad fixed in tracking space {:.1f} m from its recenter anchor; width {:.3f} m",
                             menu_distance_m, menu_width_m);
                     }
-                    else {
-                        // At an exactly vertical view direction the horizontal
-                        // projection is undefined. Retain the previous yaw rather
-                        // than allowing the menu to jump to an arbitrary heading.
-                        (void)horizontal_forward_from_pose(
-                            center_pose, menu_horizontal_forward_);
-                    }
-                    menu_pose_.orientation = yaw_only_orientation_from_forward(
-                        menu_horizontal_forward_);
-                    menu_pose_.position = {
-                        menu_anchor_position_.x +
-                            menu_horizontal_forward_.x * menu_distance_m,
-                        menu_anchor_position_.y,
-                        menu_anchor_position_.z +
-                            menu_horizontal_forward_.z * menu_distance_m,
-                    };
 
                     XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
                     const auto menu_wait_start = std::chrono::steady_clock::now();
@@ -1803,6 +1804,19 @@ namespace afvr
                     center_pose.position.z =
                         (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
 
+                    if (!scope_pose_valid_) {
+                        scope_pose_ = center_pose;
+                        const XrVector3f forward = rotate_vector(
+                            center_pose.orientation,
+                            {0.0f, 0.0f, -scope_distance_m});
+                        scope_pose_.position.x += forward.x;
+                        scope_pose_.position.y += forward.y;
+                        scope_pose_.position.z += forward.z;
+                        scope_pose_valid_ = true;
+                        xlog::info(
+                            "[AFVR] Native weapon-scope quad fixed in tracking space until recenter");
+                    }
+
                     XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
                     const auto image_wait_start = std::chrono::steady_clock::now();
                     check(xrAcquireSwapchainImage(menu_swapchain_.handle,
@@ -1836,12 +1850,7 @@ namespace afvr
 
                     quad.space = reference_space_;
                     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-                    quad.pose = center_pose;
-                    const XrVector3f forward = rotate_vector(
-                        center_pose.orientation, {0.0f, 0.0f, -scope_distance_m});
-                    quad.pose.position.x += forward.x;
-                    quad.pose.position.y += forward.y;
-                    quad.pose.position.z += forward.z;
+                    quad.pose = scope_pose_;
                     quad.size.width = scope_width_m;
                     quad.size.height = scope_width_m *
                         static_cast<float>(menu_swapchain_.height) /

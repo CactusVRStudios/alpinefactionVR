@@ -4,12 +4,22 @@
 
 # Alpine Faction VR
 
-Alpine Faction VR 0.8 is a tested virtual-reality implementation for the 2001 FPS **Red Faction**, built on top of [Alpine Faction](https://github.com/GooberRF/alpinefaction).
+Alpine Faction VR 1.0 beta is a tested virtual-reality implementation for the 2001 FPS **Red Faction**, built on top of [Alpine Faction](https://github.com/GooberRF/alpinefaction).
 
 > [!CAUTION]
-> This is an early VR release. It has passed the `vr08-synced-fire-test`, but remains experimental and may still crash or cause visual, input, or gameplay issues on some systems. Back up your files and saves before trying it.
+> This is a beta VR release and may still crash or cause visual, input, or gameplay issues on some systems. Back up your files and saves before trying it.
 
-The current release is **Alpine Faction VR 0.8** (`vr08-synced-fire-test`).
+The current release is **Alpine Faction VR 1.0 beta**.
+
+## What's new in 1.0 beta
+
+- The bomb-defusal sequence and ending credits are now presented correctly in VR.
+- The bomb-defusal interface supports left-thumbstick directional input.
+- Menus and native weapon scopes remain fixed in tracking space until recentering, making them more comfortable to use.
+- New save games receive an automatic date-and-time name.
+- Shake to reload is enabled by default with an adjustable 80 cm/s downward-motion threshold.
+- The laser sight is thinner, and weapon-fire position and direction remain synchronized with the visible laser.
+- The required bundled `VR` mod is selected automatically and is included in both release packages.
 
 ## Current scope
 
@@ -21,8 +31,10 @@ An active OpenXR runtime and a working PC VR setup are required. VR mode forces 
 
 1. Install a legitimate copy of **Red Faction**.
 2. Download the latest installer from this repository's [Releases](https://github.com/CactusVRStudios/alpinefactionVR/releases) page and run it. It locates Red Faction, updates supported retail/digital versions when needed, creates the required directories, and installs Alpine Faction VR in one pass.
-3. Start `AlpineFactionVR.exe`, open **Options**, enable **VR / OpenXR**, and select your preferred turn mode.
+3. Start `AlpineFactionVR.exe`. **VR / OpenXR is enabled by default**; open **Options** if you want to change the turn mode or other VR settings.
 4. Make sure your headset's OpenXR runtime is active, then launch the game.
+
+The launcher automatically selects the bundled `VR` mod while VR mode is enabled.
 
 An advanced/manual ZIP containing only the mod files is provided with every release. It requires an already prepared Alpine Faction installation; extract it over the Alpine Faction directory and replace files when prompted.
 
@@ -41,6 +53,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 
 - **Left thumbstick:** Move
 - **Ladders:** Look up/down and push the left thumbstick forward to climb
+- **Swimming:** Look up/down and push the left thumbstick forward to swim vertically
 - **Left thumbstick press:** Holster weapon
 - **Left X:** Reload
 - **Shake to reload:** Optional; when enabled, make one forceful downward shake with the right controller
@@ -68,6 +81,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 
 - **Left thumbstick:** Move
 - **Ladders:** Look up/down and push the left thumbstick forward to climb
+- **Swimming:** Look up/down and push the left thumbstick forward to swim vertically
 - **Left thumbstick press:** Holster weapon
 - **Left A:** Reload
 - **Shake to reload:** Optional; when enabled, make one forceful downward shake with the right controller
@@ -90,7 +104,7 @@ You can also enable VR with the `-vr` command-line option. Settings are stored i
 - **Menu navigation:** Aim with the right controller and select with the right trigger
 - **Menu back:** Right B or hold both A buttons for 0.6 seconds
 
-Shake to reload is disabled by default. Enable it in the launcher under **Options → VR / OpenXR**; the downward-motion threshold can be adjusted freely there in cm/s. Lower values are more sensitive.
+Shake to reload is enabled by default with an 80 cm/s threshold. It can be disabled or adjusted freely in the launcher under **Options → VR / OpenXR**. Lower threshold values are more sensitive.
 
 ### Turrets and vehicles
 
@@ -106,15 +120,16 @@ Shake to reload is disabled by default. Enable it in the launcher under **Option
 ### Precision and sniper scopes
 
 - Alternate fire retains Red Faction's native zoom, reticle, and scope mask for the Precision Rifle and Sniper Rifle.
-- While zoomed, the completed native game image is presented as a comfortable head-following OpenXR quad instead of an incorrectly magnified stereo world.
+- While zoomed, the completed native game image is presented on an OpenXR quad that remains fixed in tracking space until the scope closes or tracking is recentered.
 - Closing the scope, switching weapons, opening a menu, or leaving gameplay immediately restores normal stereoscopic VR.
 
 ### Menus and interaction
 
 - Usable objects—including buttons, switches, doors, and vehicles—follow the physical HMD viewing direction.
 - Interaction overlays and activation use the same target.
-- Main, pause, and shared VR menus follow horizontal head yaw while remaining upright; head pitch and roll no longer move or tilt them.
+- Main, pause, and shared VR menus open upright in front of the player and remain fixed in tracking space until recentering.
 - Controller menu raycasting uses the currently displayed menu pose.
+- The bomb-defusal sequence and ending credits use the same VR-compatible quad presentation; the bomb interface accepts left-thumbstick directions.
 
 ### Room-scale movement
 
@@ -146,7 +161,7 @@ The pinned Khronos OpenXR SDK is fetched during configuration, and the 32-bit lo
 After building the OpenXR-enabled Release configuration, create both supported release artifacts with:
 
 ```powershell
-.\tools\make-vr-release.ps1 -Version "0.8" -BuildDir ".\build-afvr\bin\Release"
+.\tools\make-vr-release.ps1 -Version "1.0beta" -BuildDir ".\build-afvr\bin\Release"
 ```
 
 The script always creates a basic ZIP and, when Inno Setup 6 and the patch payload in `setup/patches/output` are available, a one-step installer. Use `-SkipInstaller` when only the ZIP is needed.

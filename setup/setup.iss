@@ -72,6 +72,7 @@ Source: "{#SrcRootDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 #ifdef VRBuild
 Source: "assets\installer-music.wav"; Flags: dontcopy
 Source: "{#SrcRootDir}\README.md"; DestDir: "{app}"; DestName: "README-VR.md"; Flags: ignoreversion
+Source: "{#SrcRootDir}\resources\vr_mod\vr_weapons.vpp"; DestDir: "{code:GetGameDir}\mods\VR"; Flags: ignoreversion
 #endif
 Source: "{#SrcRootDir}\resources\RED.exe.manifest"; DestDir: "{code:GetGameDir}"; Flags: ignoreversion; Tasks: redvisualstyles
 ; RTPatch patches (extracted from official 1.20 patches)

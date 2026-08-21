@@ -19,6 +19,7 @@ $payloadFolderName = "VR Mod"
 $payloadDir = Join-Path $OutputDir $payloadFolderName
 $zipPath = Join-Path $OutputDir "AlpineFactionVR-$Version.zip"
 $requiredFiles = @("AlpineFactionVR.exe", "CrashHandler.exe", "AlpineEditor.dll", "AlpineFaction.dll", "d3d8to9.dll", "alpinefaction.vpp", "licensing-info.txt")
+$vrModSourceDir = Join-Path $repoDir "resources\vr_mod"
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 if (Test-Path -LiteralPath $payloadDir) {
@@ -39,6 +40,9 @@ foreach ($file in $requiredFiles) {
 }
 Copy-Item -LiteralPath (Join-Path $repoDir "README.md") -Destination (Join-Path $payloadDir "README-VR.md") -Force
 Copy-Item -LiteralPath (Join-Path $repoDir "LICENSE.txt") -Destination $payloadDir -Force
+$vrModPayloadDir = Join-Path $payloadDir "mods\VR"
+New-Item -ItemType Directory -Force -Path $vrModPayloadDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $vrModSourceDir "vr_weapons.vpp") -Destination $vrModPayloadDir -Force
 Compress-Archive -Path $payloadDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
 Write-Host "Created basic ZIP: $zipPath"
 

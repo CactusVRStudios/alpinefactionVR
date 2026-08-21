@@ -285,9 +285,6 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
     if (exe_path_opt) {
         launcher.set_app_exe_path(exe_path_opt.value());
     }
-    if (mod_name) {
-        launcher.set_mod(mod_name);
-    }
     std::vector<std::string> game_args = m_cmd_line_info.GetPassThroughArgs();
     GameConfig config;
     config.load();
@@ -295,6 +292,10 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
         std::ranges::find(game_args, "-vr") != game_args.end();
     const bool vr_enabled = config.vr_enabled || command_line_vr;
     if (vr_enabled) {
+        launcher.set_mod("VR");
+        if (mod_name && _stricmp(mod_name, "VR") != 0) {
+            xlog::warn("[AFVR] Replacing selected mod '{}' with required VR mod", mod_name);
+        }
         if (std::ranges::find(game_args, "-dedicated") != game_args.end()) {
             Message(hwnd,
                 "VR mode cannot be used with -dedicated.",
@@ -311,6 +312,9 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
         xlog::info("[AFVR] Launcher VR activation: enabled; forcing Direct3D 11");
     }
     else {
+        if (mod_name) {
+            launcher.set_mod(mod_name);
+        }
         xlog::info("[AFVR] Launcher VR activation: disabled");
     }
     launcher.set_args(game_args);

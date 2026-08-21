@@ -85,6 +85,7 @@ namespace afvr
         void set_menu_active(bool active);
         void set_scope_active(bool active);
         void set_hud_active(bool active);
+        void reset_fixed_quad_poses();
         [[nodiscard]] bool get_menu_pointer(float& u, float& v) const;
         void shutdown();
 
@@ -202,6 +203,8 @@ namespace afvr
         XrPosef menu_pose_{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
         XrVector3f menu_anchor_position_{0.0f, 0.0f, 0.0f};
         XrVector3f menu_horizontal_forward_{0.0f, 0.0f, -1.0f};
+        bool scope_pose_valid_ = false;
+        XrPosef scope_pose_{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
         bool first_menu_layer_logged_ = false;
         bool first_scope_layer_logged_ = false;
         bool first_hud_layer_logged_ = false;

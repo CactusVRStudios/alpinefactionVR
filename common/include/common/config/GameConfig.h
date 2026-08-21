@@ -79,10 +79,10 @@ struct GameConfig
     // VR / OpenXR (singleplayer only)
     CfgVar<bool> vr_enabled = true;
     CfgVar<bool> vr_fast_weapon_switch = false;
-    CfgVar<bool> vr_shake_reload = false;
+    CfgVar<bool> vr_shake_reload = true;
     // User-tunable downward controller speed in cm/s, with no imposed lower
     // bound so sensitivity can be adjusted freely.
-    CfgVar<unsigned> vr_shake_reload_threshold_cm_s = 20;
+    CfgVar<unsigned> vr_shake_reload_threshold_cm_s = 80;
     enum class VrTurnMode
     {
         snap = 0,

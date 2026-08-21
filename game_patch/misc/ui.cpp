@@ -6,6 +6,7 @@
 #include <patch_common/AsmWriter.h>
 #include <format>
 #include <algorithm>
+#include <ctime>
 #include "alpine_settings.h"
 #include "misc.h"
 #include "spray_picker.h"
@@ -18,6 +19,7 @@
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
 #include "../rf/input.h"
+#include "../rf/gameseq.h"
 #include "../rf/player/player.h"
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
@@ -380,7 +382,18 @@ void __fastcall UiInputBox_create(rf::ui::InputBox& this_, int, rf::ui::Gadget *
     this_.h = static_cast<int>(rf::gr::get_font_height(font) / rf::ui::scale_y);
     this_.max_text_width = static_cast<int>(w * rf::ui::scale_x);
     this_.font = font;
-    std::strncpy(this_.text, text, std::size(this_.text));
+    char dated_save_name[32]{};
+    const char* initial_text = text;
+    if (rf::gameseq_get_state() == rf::GS_SAVE_GAME_MENU) {
+        const std::time_t now = std::time(nullptr);
+        std::tm local_time{};
+        localtime_s(&local_time, &now);
+        if (std::strftime(dated_save_name, std::size(dated_save_name),
+                "%d-%m-%Y-%H-%M", &local_time) > 0) {
+            initial_text = dated_save_name;
+        }
+    }
+    std::strncpy(this_.text, initial_text, std::size(this_.text));
     this_.text[std::size(this_.text) - 1] = '\0';
 }
 FunHook UiInputBox_create_hook{0x00456FE0, UiInputBox_create};

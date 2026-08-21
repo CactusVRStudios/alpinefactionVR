@@ -116,6 +116,7 @@ namespace afvr
         int g_vehicle_exit_level_frames = 0;
         bool g_movement_input_logged = false;
         bool g_ladder_input_logged = false;
+        bool g_swimming_input_logged = false;
         bool g_snap_turn_logged = false;
         bool g_smooth_turn_logged = false;
         bool g_snap_turn_latched = false;
@@ -235,6 +236,7 @@ namespace afvr
         bool g_laser_sight_enabled = false;
         bool g_fire_origin_debug_visible = false;
         bool g_previous_laser_toggle_pressed = false;
+        int g_bomb_defuse_direction_key = -1;
         int g_laser_trace_frame = -1;
         bool g_laser_trace_valid = false;
         bool g_laser_trace_hit = false;
@@ -2060,6 +2062,8 @@ namespace afvr
                 case rf::GS_HELP:
                 case rf::GS_GAME_OVER:
                 case rf::GS_MESSAGE_LOG:
+                case rf::GS_BOMB_DEFUSE:
+                case rf::GS_CREDITS:
                     return true;
                 default:
                     return false;
@@ -2691,7 +2695,11 @@ namespace afvr
                 const bool ladder_movement = entity && !in_vehicle &&
                     !mounted_aim && g_head_pose_valid &&
                     (entity->current_climb_region || rf::entity_is_climbing(entity));
-                const float head_forward_horizontal = ladder_movement
+                const bool swimming_movement = entity && !in_vehicle &&
+                    !mounted_aim && g_head_pose_valid &&
+                    rf::entity_is_swimming(entity);
+                const bool pitched_movement = ladder_movement || swimming_movement;
+                const float head_forward_horizontal = pitched_movement
                     ? std::sqrt(std::max(0.0f,
                         1.0f - g_hmd_relative_forward_y * g_hmd_relative_forward_y))
                     : 1.0f;
@@ -2722,16 +2730,24 @@ namespace afvr
                     controls->move.z += stick_y * yaw_cos * head_forward_horizontal -
                         stick_x * yaw_sin;
                 }
-                if (ladder_movement) {
+                if (pitched_movement) {
                     controls->move.y += stick_y * g_hmd_relative_forward_y;
                     if (!g_ladder_input_logged && std::abs(stick_y) > 0.0f &&
-                        std::abs(g_hmd_relative_forward_y) > 0.05f) {
+                        std::abs(g_hmd_relative_forward_y) > 0.05f &&
+                        ladder_movement) {
                         g_ladder_input_logged = true;
                         xlog::info(
                             "[AFVR] Ladder movement follows tracked HMD pitch");
                     }
+                    if (!g_swimming_input_logged && std::abs(stick_y) > 0.0f &&
+                        std::abs(g_hmd_relative_forward_y) > 0.05f &&
+                        swimming_movement) {
+                        g_swimming_input_logged = true;
+                        xlog::info(
+                            "[AFVR] Swimming movement follows tracked HMD pitch");
+                    }
                 }
-                if (ladder_movement) {
+                if (pitched_movement) {
                     const float movement_length = std::sqrt(
                         controls->move.x * controls->move.x +
                         controls->move.y * controls->move.y +
@@ -3626,6 +3642,36 @@ namespace afvr
                 g_menu_pointer_valid = false;
             }
             const auto& input = g_openxr->input_state();
+
+            // The finale's bomb interface is a native 2D state. Keep its
+            // original keyboard navigation semantics while driving them from
+            // the left controller stick shown alongside the captured quad.
+            int bomb_defuse_direction_key = -1;
+            if (game_state == rf::GS_BOMB_DEFUSE) {
+                constexpr float direction_threshold = 0.55f;
+                const float x = input.left_thumbstick.x;
+                const float y = input.left_thumbstick.y;
+                if (std::abs(x) >= direction_threshold ||
+                    std::abs(y) >= direction_threshold) {
+                    if (std::abs(x) > std::abs(y)) {
+                        bomb_defuse_direction_key =
+                            x < 0.0f ? rf::KEY_LEFT : rf::KEY_RIGHT;
+                    }
+                    else {
+                        bomb_defuse_direction_key =
+                            y < 0.0f ? rf::KEY_DOWN : rf::KEY_UP;
+                    }
+                }
+            }
+            if (bomb_defuse_direction_key != g_bomb_defuse_direction_key) {
+                if (g_bomb_defuse_direction_key >= 0) {
+                    rf::key_process_event(g_bomb_defuse_direction_key, 0, 0);
+                }
+                if (bomb_defuse_direction_key >= 0) {
+                    rf::key_process_event(bomb_defuse_direction_key, 1, 0);
+                }
+                g_bomb_defuse_direction_key = bomb_defuse_direction_key;
+            }
             g_shake_reload_just_pressed = false;
             if (g_game_config.vr_shake_reload &&
                 g_openxr->is_session_running() &&
@@ -3978,6 +4024,7 @@ namespace afvr
         g_vehicle_exit_level_frames = 0;
         g_movement_input_logged = false;
         g_ladder_input_logged = false;
+        g_swimming_input_logged = false;
         g_snap_turn_logged = false;
         g_smooth_turn_logged = false;
         g_snap_turn_latched = false;
@@ -4088,6 +4135,7 @@ namespace afvr
         g_laser_sight_enabled = false;
         g_fire_origin_debug_visible = false;
         g_previous_laser_toggle_pressed = false;
+        g_bomb_defuse_direction_key = -1;
         g_laser_trace_frame = -1;
         g_laser_trace_valid = false;
         g_laser_trace_hit = false;
@@ -4190,6 +4238,7 @@ namespace afvr
 #ifdef AF_ENABLE_OPENXR
         if (g_openxr) {
             g_recenter_requested = true;
+            g_openxr->reset_fixed_quad_poses();
             g_roomscale_world_correction = {};
             g_roomscale_collision_frame = -1;
             if (g_menu_capture_active) {

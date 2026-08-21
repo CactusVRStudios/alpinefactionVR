@@ -1001,7 +1001,7 @@ namespace gr::d3d11
         const rf::Vector3& end)
     {
         render_vr_world_debug_beam(
-            start, end, rf::Color{255, 0, 0, 72}, 0.009f);
+            start, end, rf::Color{255, 0, 0, 72}, 0.003375f);
     }
 
     void Renderer::render_vr_world_debug_beam(const rf::Vector3& start,

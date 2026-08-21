@@ -1,6 +1,23 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
+Alpine Faction VR 1.0 beta: Released Aug-21-2026
+--------------------------------
+### VR changes
+- Render the bomb-defusal sequence and ending credits through the fixed OpenXR quad layer.
+- Add left-thumbstick directional control to the bomb-defusal interface.
+- Keep menu and native weapon-scope quads fixed in tracking space until recentering.
+- Add automatic date-and-time names to new save games.
+- Make shake reload enabled by default with an 80 cm/s downward-speed threshold.
+- Reduce the laser-sight diameter by 50%.
+- Always load the bundled `VR` mod when VR mode is enabled.
+- Include `mods/VR/vr_weapons.vpp` in both installer and ZIP distributions.
+
+Alpine Faction VR 0.9: Released Aug-20-2026
+--------------------------------
+### VR changes
+- Make swimming follow tracked HMD pitch: look up or down and push the left thumbstick forward to ascend or descend.
+
 Alpine Faction VR 0.8 (`vr08-synced-fire-test`): Released Aug-20-2026
 --------------------------------
 ### Release status
